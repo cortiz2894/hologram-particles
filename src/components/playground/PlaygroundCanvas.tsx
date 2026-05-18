@@ -57,9 +57,14 @@ export default function PlaygroundCanvas() {
     mouseScatter,
     mouseGlowColor,
     mouseGlowPassive,
+    mouseGlowDecay,
     mouseGlowActive,
     mouseGlowPow,
     mouseLerp,
+    bloomStrength,
+    bloomRadius,
+    bloomThreshold,
+    chromaticStr,
     lightX,
     lightY,
     lightZ,
@@ -80,7 +85,7 @@ export default function PlaygroundCanvas() {
       {
         color: { value: "#8aa0b8", label: "Color" },
         sphereSize: {
-          value: 0.01,
+          value: 0.013,
           min: 0.003,
           max: 0.08,
           step: 0.001,
@@ -139,21 +144,21 @@ export default function PlaygroundCanvas() {
     Interaction: folder(
       {
         mouseRadius: {
-          value: 1.1,
+          value: 2.15,
           min: 0.1,
           max: 5,
           step: 0.05,
           label: "Radius",
         },
         mouseStrength: {
-          value: 7.1,
+          value: 2.3,
           min: 0,
           max: 10,
           step: 0.05,
           label: "Strength",
         },
         pushStrength: {
-          value: 1,
+          value: 3,
           min: 0,
           max: 30,
           step: 0.5,
@@ -162,53 +167,94 @@ export default function PlaygroundCanvas() {
         springStiffness: {
           value: 40,
           min: 0.5,
-          max: 40,
+          max: 60,
           step: 0.5,
-          label: "Stiffness",
+          label: "Return Speed",
         },
         springDamping: {
           value: 20,
           min: 0.1,
-          max: 20,
+          max: 40,
           step: 0.1,
-          label: "Damping",
+          label: "Return Smoothness",
         },
 
         mouseScatter: {
-          value: 1.55,
+          value: 1,
           min: 0,
           max: 3,
           step: 0.05,
           label: "Scatter",
         },
-        mouseGlowColor: { value: "#ffffff", label: "Glow Color" },
+        // mouseGlowColor: { value: "#bac9cb", label: "Glow Color" },
+        mouseGlowColor: { value: "#ffada7", label: "Glow Color" },
         mouseGlowPassive: {
-          value: 1.8,
+          value: 3,
           min: 0,
           max: 3,
           step: 0.05,
           label: "Glow Passive",
         },
         mouseGlowActive: {
-          value: 1.5,
+          value: 6,
           min: 0,
           max: 6,
           step: 0.05,
           label: "Glow Active",
         },
+        mouseGlowDecay: {
+          value: 0.3,
+          min: 0.1,
+          max: 10,
+          step: 0.1,
+          label: "Glow Decay",
+        },
         mouseGlowPow: {
-          value: 2.0,
+          value: 6.0,
           min: 0.5,
           max: 6,
           step: 0.1,
           label: "Glow Sharpness",
         },
         mouseLerp: {
-          value: 2.0,
+          value: 1.5,
           min: 0.5,
           max: 30,
           step: 0.5,
           label: "Follow Speed",
+        },
+      },
+      { collapsed: false },
+    ),
+    PostFX: folder(
+      {
+        bloomStrength: {
+          value: 0.4,
+          min: 0,
+          max: 3,
+          step: 0.05,
+          label: "Bloom Strength",
+        },
+        bloomRadius: {
+          value: 0.43,
+          min: 0,
+          max: 1,
+          step: 0.01,
+          label: "Bloom Radius",
+        },
+        bloomThreshold: {
+          value: 0.32,
+          min: 0,
+          max: 1,
+          step: 0.01,
+          label: "Bloom Threshold",
+        },
+        chromaticStr: {
+          value: 0.0,
+          min: 0,
+          max: 3,
+          step: 0.05,
+          label: "Chromatic Aberration",
         },
       },
       { collapsed: false },
@@ -261,9 +307,9 @@ export default function PlaygroundCanvas() {
     Wave: folder(
       {
         noiseAmp: {
-          value: 0.5,
+          value: 0.72,
           min: 0,
-          max: 0.5,
+          max: 1,
           step: 0.005,
           label: "Wave Amp",
         },
@@ -275,35 +321,35 @@ export default function PlaygroundCanvas() {
           label: "Wave Scale",
         },
         noiseSpeed: {
-          value: 0.59,
+          value: 1,
           min: 0,
           max: 2,
           step: 0.01,
           label: "Wave Speed",
         },
         noiseGain: {
-          value: 0.73,
+          value: 0.65,
           min: 0.1,
           max: 0.9,
           step: 0.01,
           label: "Turbulence",
         },
         maskScale: {
-          value: 0.5,
+          value: 0.95,
           min: 0.05,
           max: 2,
           step: 0.05,
           label: "Instability Scale",
         },
         maskSpeed: {
-          value: 0.21,
+          value: 0.5,
           min: 0,
           max: 0.5,
           step: 0.005,
           label: "Instability Speed",
         },
         maskContrast: {
-          value: 4.0,
+          value: 3.8,
           min: 0.1,
           max: 8,
           step: 0.1,
@@ -357,7 +403,12 @@ export default function PlaygroundCanvas() {
           mouseGlowPassive={mouseGlowPassive}
           mouseGlowActive={mouseGlowActive}
           mouseGlowPow={mouseGlowPow}
+          mouseGlowDecay={mouseGlowDecay}
           mouseLerp={mouseLerp}
+          bloomStrength={bloomStrength}
+          bloomRadius={bloomRadius}
+          bloomThreshold={bloomThreshold}
+          chromaticStr={chromaticStr}
           noiseAmp={noiseAmp}
           noiseScale={noiseScale}
           noiseSpeed={noiseSpeed}

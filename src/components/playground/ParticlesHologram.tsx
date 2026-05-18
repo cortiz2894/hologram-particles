@@ -18,7 +18,7 @@ import {
   Mesh,
   Color,
 } from "three";
-import { WebGPURenderer, MeshBasicNodeMaterial } from "three/webgpu";
+import { WebGPURenderer, MeshBasicNodeMaterial, PostProcessing } from "three/webgpu";
 import {
   positionLocal,
   normalLocal,
@@ -34,9 +34,12 @@ import {
   clamp,
   mix,
   pow,
+  pass,
   mx_noise_float,
   mx_fractal_noise_vec3,
 } from "three/tsl";
+import { bloom } from "three/addons/tsl/display/BloomNode.js";
+import { chromaticAberration } from "three/addons/tsl/display/ChromaticAberrationNode.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshSurfaceSampler } from "three/addons/math/MeshSurfaceSampler.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -123,10 +126,25 @@ export interface ParticlesHologramProps {
    */
   mouseGlowPow?: number;
   /**
+   * Glow decay speed — how fast the active glow fades after interaction.
+   * Independent of spring physics so glow can linger after particles return.
+   * Lower = longer glow trail, higher = snappy disappear.
+   */
+  mouseGlowDecay?: number;
+  /**
    * Virtual cursor follow speed — lower = more inertia/drag lag, higher = instant.
    * Uses exponential smoothing: smoothPos = lerp(smoothPos, target, 1 - exp(-speed * dt))
    */
   mouseLerp?: number;
+  // ── Post-processing ────────────────────────────────────────────────────────
+  /** Bloom strength — how bright the bloom effect is */
+  bloomStrength?: number;
+  /** Bloom radius — how far the bloom spreads (0–1) */
+  bloomRadius?: number;
+  /** Bloom threshold — minimum luminance that triggers bloom (0–1) */
+  bloomThreshold?: number;
+  /** Chromatic aberration strength — RGB fringe at screen edges */
+  chromaticStr?: number;
 }
 
 export default function ParticlesHologram({
@@ -163,7 +181,12 @@ export default function ParticlesHologram({
   mouseGlowPassive  = 0.0,
   mouseGlowActive   = 1.5,
   mouseGlowPow      = 2.0,
+  mouseGlowDecay    = 1.5,
   mouseLerp         = 6.0,
+  bloomStrength     = 0.4,
+  bloomRadius       = 0.4,
+  bloomThreshold    = 0.1,
+  chromaticStr      = 0.0,
 }: ParticlesHologramProps) {
   const containerRef      = useRef<HTMLDivElement>(null);
   const controlsRef       = useRef<OrbitControls | null>(null);
@@ -174,7 +197,12 @@ export default function ParticlesHologram({
   const springDampingRef  = useRef(springDamping);
   const pushStrengthRef   = useRef(pushStrength);
   const mouseScatterRef   = useRef(mouseScatter);
+  const mouseGlowDecayRef = useRef(mouseGlowDecay);
   const mouseLerpRef      = useRef(mouseLerp);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bloomNodeRef      = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const caUniformRef      = useRef<any>(null);
 
   // ── Full re-init on url / particleCount change ────────────────────────────
   useEffect(() => {
@@ -195,6 +223,12 @@ export default function ParticlesHologram({
       renderer.setSize(container.clientWidth, container.clientHeight);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
       container.appendChild(renderer.domElement);
+
+      // Post-processing ─────────────────────────────────────────────────────
+      // Must be created after renderer.init() since it needs the WebGPU device.
+      // scene / camera are set up below so we build the pipeline at the end of
+      // the async block (after the scene is fully built).
+      let postProcessing: PostProcessing | null = null;
 
       // Stats ───────────────────────────────────────────────────────────────
       const stats = new Stats();
@@ -346,6 +380,7 @@ export default function ParticlesHologram({
         mouseGlowPassive: uniform(mouseGlowPassive),
         mouseGlowActive:  uniform(mouseGlowActive),
         mouseGlowPow:     uniform(mouseGlowPow),
+        mouseGlowEnergy:  uniform(0),   // JS-side decaying glow energy, independent of spring
       };
       uniformsRef.current = u;
 
@@ -417,32 +452,40 @@ export default function ParticlesHologram({
         .mul(u.noiseAmp)
         .mul(mask);
 
-      // 4. Mouse drag — particles are pulled TOWARD the cursor (attraction),
-      //    creating the dense bright trail seen in the reference.  Each particle
-      //    also gets a per-seed random offset so the figure breaks apart rather
-      //    than all particles clustering at the same point.
+      // 4. Mouse displacement — filled-circle shape.
       //
-      //    The spring-damper on the JS side builds up an impulse while the mouse
-      //    moves and springs it back to zero when it stops, so the figure always
-      //    reconstructs.  We only use the impulse MAGNITUDE here — the direction
-      //    is attraction-based, not velocity-based.
-      const toMouse    = u.mousePos.sub(instPos);           // vector toward cursor
+      //    Root cause of the ring/donut artefact: using "attract toward cursor"
+      //    (dragDir = normalize(toMouse)) pulls all nearby particles to the same
+      //    point.  Particles at the centre are already there and don't move;
+      //    particles at medium distance converge, leaving a void in the middle →
+      //    ring shape.
+      //
+      //    Fix: base direction is velDir (travel direction), not attraction.
+      //    Every particle in the radius gets the SAME displacement direction →
+      //    filled disc.  Scatter adds per-particle variation (cone around velDir)
+      //    without breaking the filled-circle silhouette.
+      const toMouse    = u.mousePos.sub(instPos);
       const dist       = toMouse.length();
       const falloff    = clamp(
         float(1.0).sub(dist.div(u.mouseRadius)),
         float(0), float(1)
       );
-      const dragDir    = normalize(toMouse.add(vec3(0.0001, 0, 0)));
-      // Per-particle random scatter — primes avoid aliasing between axes
-      const randDir    = vec3(
+      const impulseLen = u.mouseVel.length();
+      // Travel direction — the cone axis and primary push direction
+      const velDir     = normalize(u.mouseVel.add(vec3(0.0001, 0.0001, 0.0001)));
+      // Per-particle unit vector on the sphere (normalised → circular, not cubic)
+      const rawRand    = vec3(
         sin(seedAttr.mul(127.1)),
         cos(seedAttr.mul(311.7)),
         sin(seedAttr.mul(74.3).add(1.0))
       );
-      const impulseLen = u.mouseVel.length();
-      // Blend: attraction toward cursor + per-particle scatter
-      const mouseDisp  = dragDir
-        .add(randDir.mul(u.mouseScatter))
+      const randUnit   = normalize(rawRand);
+      // Perpendicular-to-velocity disc scatter → cone opening around velDir
+      const onAxis     = velDir.mul(dot(randUnit, velDir));
+      const perpToVel  = normalize(randUnit.sub(onAxis).add(vec3(0, 0.0001, 0)));
+      // velDir is the base (filled circle); perpToVel scatter widens the cone
+      const mouseDisp  = velDir
+        .add(perpToVel.mul(u.mouseScatter))
         .mul(impulseLen)
         .mul(u.mouseStrength)
         .mul(falloff.mul(falloff));
@@ -500,7 +543,10 @@ export default function ParticlesHologram({
       const baseColor    = u.color.mul(shading);
       const glowFalloff  = pow(clamp(falloff, float(0), float(1)), u.mouseGlowPow);
       const passiveGlow  = glowFalloff.mul(u.mouseGlowPassive);
-      const activeGlow   = glowFalloff.mul(impulseLen).mul(u.mouseGlowActive);
+      // Active glow uses mouseGlowEnergy — a JS-side value that decays at its
+      // own rate, independently of the spring physics.  This lets the glow
+      // linger as a smooth trail even after particles have physically returned.
+      const activeGlow   = glowFalloff.mul(u.mouseGlowEnergy).mul(u.mouseGlowActive);
       const glowFactor   = clamp(passiveGlow.add(activeGlow), float(0), float(1));
       material.colorNode = mix(baseColor, u.mouseGlowColor, glowFactor);
 
@@ -511,6 +557,33 @@ export default function ParticlesHologram({
       scene.add(group);
       groupRef.current = group;
       onLoaded?.();
+
+      // ── Post-processing pipeline ──────────────────────────────────────────
+      //
+      //  scenePass renders the scene to a texture, then:
+      //    bloom   — brightens pixels above the threshold, spreads the glow
+      //    CA      — RGB fringe toward screen edges for a lens-like look
+      //
+      //  Pattern: postProcessing.outputNode = sceneColor.add(bloomPass)
+      //  The CA node wraps the combined output.
+      {
+        const pp        = new PostProcessing(renderer);
+        const scenePass = pass(scene, camera);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sceneColor = (scenePass as any).getTextureNode('output');
+
+        const bloomPass = bloom(sceneColor, bloomStrength, bloomRadius, bloomThreshold);
+        bloomNodeRef.current = bloomPass;
+
+        const caStrengthU = uniform(chromaticStr);
+        caUniformRef.current = caStrengthU;
+
+        const combined  = sceneColor.add(bloomPass);
+        const caPass    = chromaticAberration(combined, caStrengthU, new Vector2(0.5, 0.5));
+
+        pp.outputNode   = caPass;
+        postProcessing  = pp;
+      }
 
       const onResize = () => {
         if (disposed || !container) return;
@@ -556,6 +629,7 @@ export default function ParticlesHologram({
       const smoothVel     = new Vector3();
       const impVel        = new Vector3();
       const impulse       = new Vector3();
+      let   glowEnergy    = 0;          // decays independently of the spring
       let   lastFrameTime = performance.now();
       let   mouseMoving   = false;
       let   moveTimer     = 0;
@@ -658,9 +732,22 @@ export default function ParticlesHologram({
         u.mouseVel.value.copy(impulse);
         prevMousePos.copy(smoothMousePos);
 
+        // ── Glow energy — independent decay ───────────────────────────────
+        // Snap up whenever the spring impulse grows, then decay at its own
+        // rate.  Decoupling from the spring lets the glow linger as a smooth
+        // after-image even after particles have physically sprung back.
+        const currentImpulse = impulse.length();
+        if (currentImpulse > glowEnergy) glowEnergy = currentImpulse;
+        glowEnergy *= Math.exp(-mouseGlowDecayRef.current * delta);
+        u.mouseGlowEnergy.value = glowEnergy;
+
         stats.begin();
         controls.update();
-        renderer.renderAsync(scene, camera);
+        if (postProcessing) {
+          postProcessing.renderAsync();
+        } else {
+          renderer.renderAsync(scene, camera);
+        }
         stats.end();
       };
       animate();
@@ -759,7 +846,22 @@ export default function ParticlesHologram({
   useEffect(() => {
     if (uniformsRef.current) uniformsRef.current.mouseGlowPow.value = mouseGlowPow;
   }, [mouseGlowPow]);
+  useEffect(() => { mouseGlowDecayRef.current = mouseGlowDecay; }, [mouseGlowDecay]);
   useEffect(() => { mouseLerpRef.current = mouseLerp; }, [mouseLerp]);
+
+  // Post-processing
+  useEffect(() => {
+    if (bloomNodeRef.current) bloomNodeRef.current.strength.value = bloomStrength;
+  }, [bloomStrength]);
+  useEffect(() => {
+    if (bloomNodeRef.current) bloomNodeRef.current.radius.value = bloomRadius;
+  }, [bloomRadius]);
+  useEffect(() => {
+    if (bloomNodeRef.current) bloomNodeRef.current.threshold.value = bloomThreshold;
+  }, [bloomThreshold]);
+  useEffect(() => {
+    if (caUniformRef.current) caUniformRef.current.value = chromaticStr;
+  }, [chromaticStr]);
 
   // Model position
   useEffect(() => {
