@@ -125,6 +125,9 @@ export default function Home() {
         <Link href="/playground" className={styles.btnPrimary}>
           Start Playground
         </Link>
+        <Link href="/playground/hologram" className={styles.btnSecondary}>
+          Particles Hologram
+        </Link>
       </div>
     </div>
   );

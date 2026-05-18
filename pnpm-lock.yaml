@@ -14,6 +14,9 @@ importers:
       '@react-three/fiber':
         specifier: ^9.5.0
         version: 9.5.0(@types/react@19.2.14)(react-dom@19.2.3)(react@19.2.3)(three@0.182.0)
+      '@types/stats.js':
+        specifier: ^0.17.4
+        version: 0.17.4
       gsap:
         specifier: ^3.14.2
         version: 3.14.2
@@ -38,6 +41,9 @@ importers:
       react-dom:
         specifier: 19.2.3
         version: 19.2.3(react@19.2.3)
+      stats.js:
+        specifier: ^0.17.0
+        version: 0.17.0
       three:
         specifier: ^0.182.0
         version: 0.182.0
