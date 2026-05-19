@@ -1,6 +1,10 @@
 "use client";
 
-export default function OverlayHeader() {
+interface OverlayHeaderProps {
+  visible?: boolean;
+}
+
+export default function OverlayHeader({ visible = true }: OverlayHeaderProps) {
   return (
     <div
       style={{
@@ -10,6 +14,9 @@ export default function OverlayHeader() {
         maxWidth: 360,
         pointerEvents: "none",
         zIndex: 999999999,
+        opacity: visible ? 1 : 0,
+        transform: visible ? "translateY(0)" : "translateY(8px)",
+        transition: "opacity 0.6s ease, transform 0.6s ease",
       }}
     >
       {/* Classification label */}

@@ -166,6 +166,7 @@ async function sampleGLBGeometry(
 export interface ParticlesHologramProps {
   url: string;
   onLoaded?: () => void;
+  onTransitionComplete?: () => void;
   particleCount?: number;
   autoRotateSpeed?: number;
   color?: string;
@@ -364,11 +365,18 @@ export interface ParticlesHologramProps {
   bgColorMid?: string;
   /** Outer (edge) color of the radial gradient background */
   bgColorEdge?: string;
+  /** Duration of the entrance morph (particles flow from origin to model) */
+  entranceMorphDur?: number;
+  /** Duration of the entrance reform (maskContrast + glow fade back to normal) */
+  entranceReformDur?: number;
+  /** Increment to re-trigger the entrance animation */
+  replayTrigger?: number;
 }
 
 export default function ParticlesHologram({
   url,
   onLoaded,
+  onTransitionComplete,
   particleCount = 50_000,
   autoRotateSpeed = 0.8,
   color = "#8aa0b8",
@@ -456,6 +464,9 @@ export default function ParticlesHologram({
   bgColorCenter = "#d2dde8",
   bgColorMid = "#a0b4c8",
   bgColorEdge = "#7a96aa",
+  entranceMorphDur = 0.7,
+  entranceReformDur = 0.35,
+  replayTrigger = 0,
 }: ParticlesHologramProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -518,6 +529,9 @@ export default function ParticlesHologram({
     tex.needsUpdate = true;
   };
 
+  const onTransitionCompleteRef = useRef(onTransitionComplete);
+  useEffect(() => { onTransitionCompleteRef.current = onTransitionComplete; }, [onTransitionComplete]);
+
   // Tracks the user's current maskContrast so deform-in can restore it
   const maskContrastRef = useRef(maskContrast);
   // Transition timing/shape — read in the animate loop, updated by useEffects
@@ -525,12 +539,17 @@ export default function ParticlesHologram({
   const transitionMorphDurRef = useRef(transitionMorphDur);
   const transitionReformDurRef = useRef(transitionReformDur);
   const transitionMaskContrastRef = useRef(transitionMaskContrast);
+  const transitionGlowScaleRef = useRef(transitionGlowScale);
+  const entranceMorphDurRef = useRef(entranceMorphDur);
+  const entranceReformDurRef = useRef(entranceReformDur);
 
   // ── Transition refs ───────────────────────────────────────────────────────
   const transitionStateRef = useRef<
     "idle" | "deform-out" | "morphing" | "deform-in"
   >("idle");
   const transitionTimeRef = useRef(0);
+  // True only during the entrance animation; drives shorter durations + glow fade
+  const isEntranceRef = useRef(true);
   const posAttrRef = useRef<InstancedBufferAttribute | null>(null);
   const normAttrRef = useRef<InstancedBufferAttribute | null>(null);
   const posAttrTargetRef = useRef<InstancedBufferAttribute | null>(null);
@@ -693,16 +712,17 @@ export default function ParticlesHologram({
       );
       // .slice() — buffer gets its own copy; cache keeps its original array so
       // writing new model data during transitions never corrupts cached geometry.
+      //
+      // Entrance animation: instPos starts collapsed at the origin, instPosTgt
+      // holds the actual model. transitionProgress 0→1 morphs from origin to model.
       sphereGeo.setAttribute(
         "instanceNormal",
-        new InstancedBufferAttribute(normals.slice(), 3),
+        new InstancedBufferAttribute(new Float32Array(normals.length), 3),
       );
       sphereGeo.setAttribute(
         "instancePos",
-        new InstancedBufferAttribute(positions.slice(), 3),
+        new InstancedBufferAttribute(new Float32Array(positions.length), 3),
       );
-      // Target attributes start identical to current — transitionProgress=0
-      // means blendPos = instPos so no visual difference on first render.
       sphereGeo.setAttribute(
         "instanceNormalTarget",
         new InstancedBufferAttribute(normals.slice(), 3),
@@ -734,7 +754,9 @@ export default function ParticlesHologram({
       normAttrTargetRef.current = sphereGeo.getAttribute(
         "instanceNormalTarget",
       ) as InstancedBufferAttribute;
-      transitionStateRef.current = "idle";
+      // Start entrance animation: morph from collapsed origin to the model.
+      // maskContrast starts deformed so the reform animates cleanly afterward.
+      transitionStateRef.current = "morphing";
       transitionTimeRef.current = 0;
 
       // TSL uniforms ────────────────────────────────────────────────────────
@@ -757,7 +779,7 @@ export default function ParticlesHologram({
         noiseGain: uniform(noiseGain),
         maskScale: uniform(maskScale),
         maskSpeed: uniform(maskSpeed),
-        maskContrast: uniform(maskContrast),
+        maskContrast: uniform(transitionMaskContrast), // starts deformed for entrance animation
         // Mouse interaction
         mousePos: uniform(new Vector3()),
         mouseVel: uniform(new Vector3()),
@@ -771,6 +793,7 @@ export default function ParticlesHologram({
         mouseGlowEnergy: uniform(0), // JS-side decaying glow energy, independent of spring
         transitionProgress: uniform(0), // 0 = current model, 1 = target model
         transitionGlowScale: uniform(transitionGlowScale),
+        entranceGlow: uniform(1), // fades 1→0 during entrance deform-in for smooth glow out
       };
       uniformsRef.current = u;
 
@@ -984,7 +1007,7 @@ export default function ParticlesHologram({
         mouseGlowFactor.add(transGlow),
         float(0),
         float(1),
-      );
+      ).mul(u.entranceGlow);
       material.colorNode = mix(shadedColor, u.mouseGlowColor, glowFactor);
 
       instancedMesh.material = material;
@@ -1384,10 +1407,10 @@ export default function ParticlesHologram({
           }
         } else if (tState === "morphing") {
           transitionTimeRef.current += delta;
-          const p = Math.min(
-            transitionTimeRef.current / transitionMorphDurRef.current,
-            1,
-          );
+          const morphDur = isEntranceRef.current
+            ? entranceMorphDurRef.current
+            : transitionMorphDurRef.current;
+          const p = Math.min(transitionTimeRef.current / morphDur, 1);
           u.transitionProgress.value = smoothstep(p);
           if (p >= 1) {
             // Commit target → current so the next transition starts from here
@@ -1405,17 +1428,35 @@ export default function ParticlesHologram({
           }
         } else if (tState === "deform-in") {
           transitionTimeRef.current += delta;
-          const p = Math.min(
-            transitionTimeRef.current / transitionReformDurRef.current,
-            1,
-          );
+          const reformDur = isEntranceRef.current
+            ? entranceReformDurRef.current
+            : transitionReformDurRef.current;
+          const p = Math.min(transitionTimeRef.current / reformDur, 1);
           const tmc = transitionMaskContrastRef.current;
           u.maskContrast.value =
             tmc + (maskContrastRef.current - tmc) * smoothstep(p);
+          // During entrance: fade out all glow smoothly as the model reforms
+          if (isEntranceRef.current) {
+            u.entranceGlow.value = 1 - smoothstep(p);
+          }
           if (p >= 1) {
             u.maskContrast.value = maskContrastRef.current;
             transitionStateRef.current = "idle";
+            if (isEntranceRef.current) {
+              isEntranceRef.current = false;
+              // entranceGlow stays at 0 here — the idle block below fades it
+              // back in gradually so mouse passive glow doesn't snap on.
+            }
+            onTransitionCompleteRef.current?.();
           }
+        }
+
+        // After entrance: only start restoring entranceGlow once the user has
+        // actually moved the mouse over the canvas — prevents the passive glow
+        // from appearing at the cursor's last stale position right after the
+        // entrance animation ends.
+        if (!isEntranceRef.current && mouseEverMoved && u.entranceGlow.value < 1) {
+          u.entranceGlow.value = Math.min(u.entranceGlow.value + delta / 1.0, 1);
         }
 
         // Manual Y rotation — replaces OrbitControls.autoRotate so only the
@@ -1823,9 +1864,41 @@ export default function ParticlesHologram({
     transitionMaskContrastRef.current = transitionMaskContrast;
   }, [transitionMaskContrast]);
   useEffect(() => {
+    transitionGlowScaleRef.current = transitionGlowScale;
     if (uniformsRef.current)
       uniformsRef.current.transitionGlowScale.value = transitionGlowScale;
   }, [transitionGlowScale]);
+  useEffect(() => {
+    entranceMorphDurRef.current = entranceMorphDur;
+  }, [entranceMorphDur]);
+  useEffect(() => {
+    entranceReformDurRef.current = entranceReformDur;
+  }, [entranceReformDur]);
+
+  // ── Replay entrance animation ─────────────────────────────────────────────
+  const isFirstReplayRef = useRef(true);
+  useEffect(() => {
+    if (isFirstReplayRef.current) { isFirstReplayRef.current = false; return; }
+    if (
+      !uniformsRef.current ||
+      !posAttrRef.current ||
+      !normAttrRef.current ||
+      !posAttrTargetRef.current
+    ) return;
+    // Zero out current positions — particles collapse back to origin
+    (posAttrRef.current.array as Float32Array).fill(0);
+    (normAttrRef.current.array as Float32Array).fill(0);
+    posAttrRef.current.needsUpdate = true;
+    normAttrRef.current.needsUpdate = true;
+    // Reset uniforms
+    uniformsRef.current.transitionProgress.value = 0;
+    uniformsRef.current.maskContrast.value = transitionMaskContrastRef.current;
+    uniformsRef.current.entranceGlow.value = 1;
+    // Restart entrance
+    isEntranceRef.current = true;
+    transitionStateRef.current = "morphing";
+    transitionTimeRef.current = 0;
+  }, [replayTrigger]);
 
   // ── Cylinder realtime updates ─────────────────────────────────────────────
   useEffect(() => {

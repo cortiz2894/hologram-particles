@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { Leva, useControls, folder } from "leva";
+import { Leva, useControls, folder, button } from "leva";
 import { LEVA_THEME } from "@/components/shared/theme";
 import HologramScene from "./HologramScene";
 import OverlayButtons from "@/components/overlay/OverlayButtons";
@@ -19,6 +19,8 @@ export default function PlaygroundCanvas() {
   const [glbUrl, setGlbUrl] = useState<string | null>(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [activeModelIndex, setActiveModelIndex] = useState(0);
+  const [headerVisible, setHeaderVisible] = useState(false);
+  const [replayTrigger, setReplayTrigger] = useState(0);
   const glbUrlRef = useRef<string | null>(null);
 
   const handleLoadGlb = useCallback((file: File) => {
@@ -125,6 +127,8 @@ export default function PlaygroundCanvas() {
     camIntensity,
     camStiffness,
     camDamping,
+    entranceMorphDur,
+    entranceReformDur,
   } = useControls("Hologram", {
     Geometry: folder(
       {
@@ -461,6 +465,29 @@ export default function PlaygroundCanvas() {
       },
       { collapsed: true },
     ),
+    Entrance: folder(
+      {
+        entranceMorphDur: {
+          value: 1.8,
+          min: 0.1,
+          max: 3,
+          step: 0.05,
+          label: "Morph Duration",
+        },
+        entranceReformDur: {
+          value: 1.1,
+          min: 0.05,
+          max: 2,
+          step: 0.05,
+          label: "Reform Duration",
+        },
+        replay: button(() => {
+          setReplayTrigger((t) => t + 1);
+          setHeaderVisible(false);
+        }),
+      },
+      { collapsed: true },
+    ),
     Cylinder: folder(
       {
         cylVisible: { value: true, label: "Visible" },
@@ -703,12 +730,16 @@ export default function PlaygroundCanvas() {
         oneLineLabels={false}
         hidden={hideLeva}
       />
-      <OverlayHeader />
+      <OverlayHeader visible={headerVisible} />
       <div style={{ position: "fixed", inset: 0 }}>
         <HologramScene
           url={glbUrl ?? MODELS[activeModelIndex].url}
           preloadUrls={MODELS.map((m) => m.url)}
           onLoaded={handleModelLoaded}
+          onTransitionComplete={() => setHeaderVisible(true)}
+          entranceMorphDur={entranceMorphDur}
+          entranceReformDur={entranceReformDur}
+          replayTrigger={replayTrigger}
           particleCount={particleCount}
           autoRotateSpeed={autoRotateSpeed}
           color={color}
