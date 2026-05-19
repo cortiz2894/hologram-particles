@@ -1,9 +1,8 @@
 "use client";
 
-import type { SceneMode } from "@/components/playground/SceneContent";
 import OverlayHeader from "./OverlayHeader";
 
-export default function UIOverlay({ mode }: { mode: SceneMode }) {
+export default function UIOverlay() {
   return (
     <div
       style={{
@@ -13,7 +12,7 @@ export default function UIOverlay({ mode }: { mode: SceneMode }) {
         pointerEvents: "none",
       }}
     >
-      <OverlayHeader mode={mode} />
+      <OverlayHeader />
     </div>
   );
 }

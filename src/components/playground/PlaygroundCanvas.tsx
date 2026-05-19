@@ -7,6 +7,7 @@ import HologramScene from "./HologramScene";
 import OverlayButtons from "@/components/overlay/OverlayButtons";
 import LoadingOverlay from "@/components/overlay/LoadingOverlay";
 import ModelSelector, { ModelOption } from "@/components/overlay/ModelSelector";
+import OverlayHeader from "../overlay/OverlayHeader";
 
 const MODELS: ModelOption[] = [
   { id: "bd1", label: "BD-1", url: "/glb/bd1.glb" },
@@ -702,7 +703,7 @@ export default function PlaygroundCanvas() {
         oneLineLabels={false}
         hidden={hideLeva}
       />
-
+      <OverlayHeader />
       <div style={{ position: "fixed", inset: 0 }}>
         <HologramScene
           url={glbUrl ?? MODELS[activeModelIndex].url}
