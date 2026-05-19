@@ -6,6 +6,9 @@ import {
   PerspectiveCamera,
   InstancedMesh,
   IcosahedronGeometry,
+  CylinderGeometry,
+  TorusGeometry,
+  PlaneGeometry,
   InstancedBufferAttribute,
   Object3D,
   Group,
@@ -17,23 +20,37 @@ import {
   Raycaster,
   Mesh,
   Color,
+  DoubleSide,
+  CanvasTexture,
+  TextureLoader,
+  RepeatWrapping,
+  LinearFilter,
+  LinearMipmapLinearFilter,
 } from "three";
 import { WebGPURenderer, MeshBasicNodeMaterial, PostProcessing } from "three/webgpu";
 import {
   positionLocal,
   normalLocal,
+  normalView,
   attribute,
   sin,
   cos,
   time,
   uniform,
+  vec2,
   vec3,
   float,
+  fract,
+  positionWorld,
   normalize,
   dot,
   clamp,
   mix,
   pow,
+  abs,
+  smoothstep as tslSmoothstep,
+  texture as tslTexture,
+  uv,
   pass,
   mx_noise_float,
   mx_fractal_noise_vec3,
@@ -44,6 +61,103 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshSurfaceSampler } from "three/addons/math/MeshSurfaceSampler.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import Stats from "stats.js";
+
+// ── Module-level geometry cache ───────────────────────────────────────────────
+// Keyed by `url:particleCount` so models are pre-sampled once and reused for
+// instant transitions.  When particleCount changes the main effect rebuilds
+// everything, so stale entries are effectively ignored (they'll never be hit
+// with a new count until they're re-populated by the preload effect).
+type GeometryData = { positions: Float32Array; normals: Float32Array };
+const geometryCache = new Map<string, GeometryData>();
+// Track in-flight requests to avoid duplicate sampling when preload and
+// a transition trigger the same URL simultaneously.
+const geometryInflight = new Map<string, Promise<GeometryData>>();
+
+function cacheKey(url: string, particleCount: number) {
+  return `${url}:${particleCount}`;
+}
+
+async function sampleGLBGeometry(
+  url: string,
+  particleCount: number,
+): Promise<GeometryData> {
+  const key = cacheKey(url, particleCount);
+  if (geometryCache.has(key)) return geometryCache.get(key)!;
+  if (geometryInflight.has(key)) return geometryInflight.get(key)!;
+
+  const promise = (async (): Promise<GeometryData> => {
+    const gltf = await new GLTFLoader().loadAsync(url);
+
+    // ── Normalise to a consistent bounding box ──────────────────────────
+    // Step 1 — center to bbox center (handles any world-space offset)
+    const bbox = new Box3().setFromObject(gltf.scene);
+    const centre = new Vector3();
+    bbox.getCenter(centre);
+    gltf.scene.position.sub(centre);
+    gltf.scene.updateMatrixWorld(true);
+
+    // Step 2 — uniform scale so the largest dimension == 3 units
+    const bbox2 = new Box3().setFromObject(gltf.scene);
+    const sv = new Vector3();
+    bbox2.getSize(sv);
+    const maxDim = Math.max(sv.x, sv.y, sv.z);
+    gltf.scene.scale.setScalar(maxDim > 0 ? 3 / maxDim : 1);
+    gltf.scene.updateMatrixWorld(true);
+
+    // Step 3 — shift so the BOTTOM of the bounding box sits at Y=0.
+    // Different GLBs can have their pivot at different heights (some at the
+    // mesh centroid, some at the floor, some exported with an arbitrary
+    // offset).  Anchoring the bottom ensures every model "stands on the
+    // same floor" and appears at the same Y position in the scene for a
+    // given modelY value.
+    const bbox3 = new Box3().setFromObject(gltf.scene);
+    gltf.scene.position.y -= bbox3.min.y;
+    gltf.scene.updateMatrixWorld(true);
+
+    const meshes: Mesh[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gltf.scene.traverse((child: any) => {
+      if ((child as Mesh).isMesh) meshes.push(child as Mesh);
+    });
+
+    const positions = new Float32Array(particleCount * 3);
+    const normals   = new Float32Array(particleCount * 3);
+    const tempPos    = new Vector3();
+    const tempNorm   = new Vector3();
+    const normMatrix = new Matrix3();
+
+    let filled  = 0;
+    const perMesh = Math.floor(particleCount / meshes.length);
+
+    for (let m = 0; m < meshes.length; m++) {
+      const mesh  = meshes[m];
+      const count = m < meshes.length - 1 ? perMesh : particleCount - filled;
+      normMatrix.getNormalMatrix(mesh.matrixWorld);
+      const sampler = new MeshSurfaceSampler(mesh).build();
+      for (let i = 0; i < count; i++) {
+        sampler.sample(tempPos, tempNorm);
+        mesh.localToWorld(tempPos);
+        tempNorm.applyMatrix3(normMatrix).normalize();
+        const b = (filled + i) * 3;
+        positions[b]     = tempPos.x;
+        positions[b + 1] = tempPos.y;
+        positions[b + 2] = tempPos.z;
+        normals[b]       = tempNorm.x;
+        normals[b + 1]   = tempNorm.y;
+        normals[b + 2]   = tempNorm.z;
+      }
+      filled += count;
+    }
+
+    const data: GeometryData = { positions, normals };
+    geometryCache.set(key, data);
+    geometryInflight.delete(key);
+    return data;
+  })();
+
+  geometryInflight.set(key, promise);
+  return promise;
+}
 
 export interface ParticlesHologramProps {
   url: string;
@@ -60,12 +174,18 @@ export interface ParticlesHologramProps {
    * into shadow side).
    */
   wrap?: number;
-  /** Light direction X component */
-  lightX?: number;
-  /** Light direction Y component */
-  lightY?: number;
-  /** Light direction Z component */
-  lightZ?: number;
+  // ── Light 1 ───────────────────────────────────────────────────────────────
+  light1X?: number;
+  light1Y?: number;
+  light1Z?: number;
+  light1Color?: string;
+  light1Intensity?: number;
+  // ── Light 2 ───────────────────────────────────────────────────────────────
+  light2X?: number;
+  light2Y?: number;
+  light2Z?: number;
+  light2Color?: string;
+  light2Intensity?: number;
   /** Model position offset X */
   modelX?: number;
   /** Model position offset Y */
@@ -145,6 +265,101 @@ export interface ParticlesHologramProps {
   bloomThreshold?: number;
   /** Chromatic aberration strength — RGB fringe at screen edges */
   chromaticStr?: number;
+  /**
+   * URLs to pre-sample in the background so model transitions are instant.
+   * Pass all model URLs upfront; the current url is already loaded by the
+   * main effect and doesn't need to be repeated here.
+   */
+  preloadUrls?: string[];
+  // ── Transition timing ────────────────────────────────────────────────────
+  /** Seconds to deform the current model before morphing (maskContrast → transitionMaskContrast) */
+  transitionDeformDur?: number;
+  /** Seconds for particles to flow from old model to new model */
+  transitionMorphDur?: number;
+  /** Seconds to reform the new model after morphing (maskContrast → user value) */
+  transitionReformDur?: number;
+  /** Target maskContrast during the transition — lower = more deformed/chaotic */
+  transitionMaskContrast?: number;
+  /** Scale of the bloom glow on high-movement particles during morph transition */
+  transitionGlowScale?: number;
+  // ── Cylinder ──────────────────────────────────────────────────────────────
+  /** Show or hide the cylinder */
+  cylVisible?: boolean;
+  /** Cylinder radius in world units */
+  cylRadius?: number;
+  /** Cylinder height in world units */
+  cylHeight?: number;
+  /** Base color of the cylinder surface */
+  cylColor?: string;
+  /** Spatial frequency of the noise line pattern */
+  cylNoiseScale?: number;
+  /** Zero-crossing threshold — smaller = thinner lines */
+  cylLineWidth?: number;
+  /** Fresnel rim falloff power — higher = tighter rim band */
+  cylFresnelPow?: number;
+  /** Opacity driven by the Fresnel rim (0 = invisible rim) */
+  cylBaseOpacity?: number;
+  /** Opacity of the noise lines */
+  cylLineOpacity?: number;
+  /** Speed at which the noise pattern scrolls across the cylinder */
+  cylNoiseSpeed?: number;
+  /** Frequency of the line-opacity pulse in Hz */
+  cylPulseSpeed?: number;
+  /** Amplitude of the pulse — 0: constant opacity · 1: opacity oscillates fully */
+  cylPulseAmp?: number;
+  /** Easing power applied to the pulse — 1: linear sine · higher: sharp flash, longer dwell */
+  cylPulseEasing?: number;
+  /** Spatial frequency of the traveling wave along the cylinder Y axis — higher = more rings visible */
+  cylWaveFreq?: number;
+  /** UV repeat factor for the triangle texture — higher = smaller/denser triangles */
+  cylTexRepeat?: number;
+  /** Vertical offset of the cylinder centre in posGroup space */
+  cylY?: number;
+  // ── Dot grid background ──────────────────────────────────────────────────
+  gridVisible?: boolean;
+  /** Dot color */
+  gridColor?: string;
+  /** Minimum dot opacity (when no wave) */
+  gridBaseOpacity?: number;
+  /** How much brighter dots get at the wave crest */
+  gridWaveAmp?: number;
+  /** Spatial scale of the wave noise — lower = larger blobs */
+  gridNoiseScale?: number;
+  /** Speed the wave drifts through the grid */
+  gridWaveSpeed?: number;
+  /** Dots per world unit — higher = denser grid */
+  gridDensity?: number;
+  /** Dot radius as a fraction of cell size (0–0.5) */
+  gridDotSize?: number;
+  // ── Halo ring ─────────────────────────────────────────────────────────────
+  /** Show or hide the halo ring */
+  ringVisible?: boolean;
+  /** Radius of the halo ring (should roughly match cylinder radius) */
+  ringRadius?: number;
+  /** Tube thickness of the ring */
+  ringThickness?: number;
+  /** Angular gap on each side, in degrees (0 = full circle) */
+  ringGap?: number;
+  /** Ring base color */
+  ringColor?: string;
+  /** Ring opacity */
+  ringOpacity?: number;
+  /** Brightness multiplier — values above bloomThreshold trigger bloom */
+  ringBrightness?: number;
+  // ── Camera mouse parallax ────────────────────────────────────────────────
+  /** Max angle (degrees) the camera drifts from center in each axis */
+  camIntensity?: number;
+  /** Spring stiffness — how fast camera accelerates toward target */
+  camStiffness?: number;
+  /** Spring damping — higher = smoother settle, lower = more overshoot */
+  camDamping?: number;
+  // ── Background gradient ───────────────────────────────────────────────────
+  /** Inner (centre) color of the radial gradient background */
+  bgColorCenter?: string;
+  /** Mid-stop color of the radial gradient background */
+  bgColorMid?: string;
+  /** Outer (edge) color of the radial gradient background */
+  bgColorEdge?: string;
 }
 
 export default function ParticlesHologram({
@@ -157,12 +372,19 @@ export default function ParticlesHologram({
   sphereSize = 0.01,
   ambient = 0.31,
   wrap = 0.87,
-  lightX = 3.8,
-  lightY = -3.0,
-  lightZ = -4.2,
+  light1X = 0,
+  light1Y = 4,
+  light1Z = 0,
+  light1Color = "#ffffff",
+  light1Intensity = 1.0,
+  light2X = 0,
+  light2Y = -4,
+  light2Z = 0,
+  light2Color = "#4488ff",
+  light2Intensity = 0.5,
   volumeStrength = 0.79,
   modelX = 0,
-  modelY = 2.5,
+  modelY = 1.0,
   modelZ = 0,
   noiseAmp = 0.08,
   noiseScale = 0.6,
@@ -187,10 +409,54 @@ export default function ParticlesHologram({
   bloomRadius       = 0.4,
   bloomThreshold    = 0.1,
   chromaticStr      = 0.0,
+  preloadUrls            = [] as string[],
+  transitionDeformDur    = 0.5,
+  transitionMorphDur     = 1.2,
+  transitionReformDur    = 0.7,
+  transitionMaskContrast = 0.2,
+  transitionGlowScale    = 1.0,
+  cylVisible      = true,
+  cylRadius       = 1.8,
+  cylHeight       = 3.5,
+  cylColor        = "#88ccff",
+  cylNoiseScale   = 2.0,
+  cylLineWidth    = 0.08,
+  cylFresnelPow   = 2.0,
+  cylBaseOpacity  = 0.15,
+  cylLineOpacity  = 0.6,
+  cylNoiseSpeed   = 0.3,
+  cylPulseSpeed   = 0.8,
+  cylPulseAmp     = 0.4,
+  cylPulseEasing  = 2.5,
+  cylWaveFreq     = 2.0,
+  cylTexRepeat    = 3,
+  cylY            = 0,
+  gridVisible      = true,
+  gridColor        = "#c8d4de",
+  gridBaseOpacity  = 0.12,
+  gridWaveAmp      = 0.55,
+  gridNoiseScale   = 0.18,
+  gridWaveSpeed    = 0.07,
+  gridDensity      = 1.1,
+  gridDotSize      = 0.07,
+  ringVisible     = true,
+  ringRadius      = 1.95,
+  ringThickness   = 0.03,
+  ringGap         = 20,
+  ringColor       = "#ffffff",
+  ringOpacity     = 0.9,
+  ringBrightness  = 3.0,
+  camIntensity    = 12,
+  camStiffness    = 3.0,
+  camDamping      = 4.0,
+  bgColorCenter   = "#d2dde8",
+  bgColorMid      = "#a0b4c8",
+  bgColorEdge     = "#7a96aa",
 }: ParticlesHologramProps) {
-  const containerRef      = useRef<HTMLDivElement>(null);
-  const controlsRef       = useRef<OrbitControls | null>(null);
-  const groupRef          = useRef<Group | null>(null);
+  const containerRef         = useRef<HTMLDivElement>(null);
+  const controlsRef          = useRef<OrbitControls | null>(null);
+  const groupRef             = useRef<Group | null>(null);
+  const autoRotateSpeedRef   = useRef(autoRotateSpeed);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const uniformsRef       = useRef<Record<string, any> | null>(null);
   const springKRef        = useRef(springStiffness);
@@ -203,6 +469,63 @@ export default function ParticlesHologram({
   const bloomNodeRef      = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const caUniformRef      = useRef<any>(null);
+  const cylMeshRef        = useRef<Mesh | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cylUniRef         = useRef<Record<string, any> | null>(null);
+  const gridMeshRef       = useRef<Mesh | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const gridUniRef        = useRef<Record<string, any> | null>(null);
+  const ringRotGroupRef   = useRef<Group | null>(null);  // rotates with autoRotateSpeed
+  const ringTopGroupRef   = useRef<Group | null>(null);  // positioned at cylinder top
+  const ringBotGroupRef   = useRef<Group | null>(null);  // positioned at cylinder bottom
+  const ring1Ref          = useRef<Mesh | null>(null);   // top arc 1
+  const ring2Ref          = useRef<Mesh | null>(null);   // top arc 2
+  const ring3Ref          = useRef<Mesh | null>(null);   // bottom arc 1
+  const ring4Ref          = useRef<Mesh | null>(null);   // bottom arc 2
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ringUniRef        = useRef<Record<string, any> | null>(null);
+  const camIntensityRef   = useRef(camIntensity);
+  const camStiffnessRef   = useRef(camStiffness);
+  const camDampingRef     = useRef(camDamping);
+  const bgCtxRef          = useRef<CanvasRenderingContext2D | null>(null);
+  const bgTexRef          = useRef<CanvasTexture | null>(null);
+  const bgColorCenterRef  = useRef(bgColorCenter);
+  const bgColorMidRef     = useRef(bgColorMid);
+  const bgColorEdgeRef    = useRef(bgColorEdge);
+
+  const redrawBg = () => {
+    const ctx = bgCtxRef.current;
+    const tex = bgTexRef.current;
+    if (!ctx || !tex) return;
+    const { width, height } = ctx.canvas;
+    const grad = ctx.createRadialGradient(
+      width * 0.48, height * 0.45, 0,
+      width * 0.5,  height * 0.5,  width * 0.8,
+    );
+    grad.addColorStop(0,    bgColorCenterRef.current);
+    grad.addColorStop(0.45, bgColorMidRef.current);
+    grad.addColorStop(1,    bgColorEdgeRef.current);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, height);
+    tex.needsUpdate = true;
+  };
+
+  // Tracks the user's current maskContrast so deform-in can restore it
+  const maskContrastRef          = useRef(maskContrast);
+  // Transition timing/shape — read in the animate loop, updated by useEffects
+  const transitionDeformDurRef    = useRef(transitionDeformDur);
+  const transitionMorphDurRef     = useRef(transitionMorphDur);
+  const transitionReformDurRef    = useRef(transitionReformDur);
+  const transitionMaskContrastRef = useRef(transitionMaskContrast);
+
+  // ── Transition refs ───────────────────────────────────────────────────────
+  const transitionStateRef = useRef<'idle'|'deform-out'|'morphing'|'deform-in'>('idle');
+  const transitionTimeRef  = useRef(0);
+  const posAttrRef         = useRef<InstancedBufferAttribute | null>(null);
+  const normAttrRef        = useRef<InstancedBufferAttribute | null>(null);
+  const posAttrTargetRef   = useRef<InstancedBufferAttribute | null>(null);
+  const normAttrTargetRef  = useRef<InstancedBufferAttribute | null>(null);
+  const isFirstUrlRef      = useRef(true);
 
   // ── Full re-init on url / particleCount change ────────────────────────────
   useEffect(() => {
@@ -240,6 +563,83 @@ export default function ParticlesHologram({
 
       // Scene / Camera ──────────────────────────────────────────────────────
       const scene = new Scene();
+
+      // Radial gradient background — drawn on a canvas so PostProcessing
+      // captures it correctly (CSS backgrounds are not visible through the
+      // WebGPU PostProcessing output pass).
+      {
+        const bgCanvas = document.createElement("canvas");
+        bgCanvas.width = bgCanvas.height = 512;
+        const bgCtx = bgCanvas.getContext("2d")!;
+        bgCtxRef.current = bgCtx;
+
+        const bgTex = new CanvasTexture(bgCanvas);
+        bgTexRef.current = bgTex;
+        scene.background = bgTex;
+        redrawBg();
+      }
+
+      // ── Dot grid background ───────────────────────────────────────────────
+      // Full-screen plane placed far behind the scene.  The TSL shader draws
+      // a regular dot grid and animates brightness with a drifting noise wave.
+      // renderOrder = -1 + depthTest = false  →  always renders behind everything.
+      {
+        // Oversized plane so any camera XY offset stays covered
+        const gridGeo = new PlaneGeometry(50, 32);
+        const gridMat = new MeshBasicNodeMaterial() as any;
+        gridMat.transparent = true;
+        gridMat.depthWrite  = false;
+        // depthTest ON — the hologram particles are opaque and write depth at
+        // Z≈0.  The grid plane sits at Z=−5 (further from camera), so its depth
+        // test fails wherever the hologram or cylinder are present → they always
+        // appear in front of the dots without any manual renderOrder tricks.
+        gridMat.depthTest   = true;
+
+        const uGridColor       = uniform(new Color(gridColor));
+        const uGridBaseOpacity = uniform(gridBaseOpacity);
+        const uGridWaveAmp     = uniform(gridWaveAmp);
+        const uGridNoiseScale  = uniform(gridNoiseScale);
+        const uGridWaveSpeed   = uniform(gridWaveSpeed);
+        const uGridDensity     = uniform(gridDensity);
+        const uGridDotSize     = uniform(gridDotSize);
+
+        // Grid: divide world-XY into cells of size 1/density.
+        // Within each cell, compute distance to the cell centre.
+        const cellPos  = positionWorld.xy.mul(uGridDensity);
+        const fracCell = fract(cellPos).sub(vec2(0.5, 0.5));
+        const dotDist  = fracCell.length();
+        const dotShape = float(1).sub(tslSmoothstep(float(0), uGridDotSize, dotDist));
+
+        // Wave: drifting 3-D noise — X/Y are spatial, Z scrolls with time.
+        // Result is a slow organic illumination wave rolling across the grid.
+        const noiseCoord = vec3(
+          positionWorld.x.mul(uGridNoiseScale),
+          positionWorld.y.mul(uGridNoiseScale),
+          time.mul(uGridWaveSpeed),
+        );
+        const wave = mx_noise_float(noiseCoord).mul(float(0.5)).add(float(0.5));
+
+        // Drive COLOR brightness with the wave — not just opacity.
+        // This lets wave crests exceed 1.0 and trigger the bloom pass,
+        // making the illumination clearly visible against the background.
+        // uGridBaseOpacity = dim floor · uGridWaveAmp can be > 1 for bloom.
+        const waveBrightness = uGridBaseOpacity.add(wave.mul(uGridWaveAmp));
+        gridMat.colorNode   = uGridColor.mul(waveBrightness);
+        gridMat.opacityNode = dotShape;  // dot shape is a solid mask — no fade
+
+        const gridMesh = new Mesh(gridGeo, gridMat);
+        gridMesh.position.z  = -5;
+        gridMesh.renderOrder = -1;
+        scene.add(gridMesh);
+
+        gridMeshRef.current = gridMesh;
+        gridUniRef.current  = {
+          uGridColor, uGridBaseOpacity, uGridWaveAmp,
+          uGridNoiseScale, uGridWaveSpeed, uGridDensity, uGridDotSize,
+          gridMat,
+        };
+      }
+
       const camera = new PerspectiveCamera(
         50,
         container.clientWidth / container.clientHeight,
@@ -250,75 +650,18 @@ export default function ParticlesHologram({
 
       // Orbit Controls ──────────────────────────────────────────────────────
       const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
-      controls.autoRotate = true;
-      controls.autoRotateSpeed = autoRotateSpeed;
-      controls.minDistance = 2;
-      controls.maxDistance = 20;
-      controlsRef.current = controls;
+      controls.enabled     = false;
+      controls.autoRotate  = false;
+      controlsRef.current  = controls;
 
-      // Load GLB ────────────────────────────────────────────────────────────
-      const gltf = await new GLTFLoader().loadAsync(url);
+      // Load + sample initial GLB ───────────────────────────────────────────
+      const { positions, normals } = await sampleGLBGeometry(url, particleCount);
       if (disposed) return;
 
-      // Centre + normalise to ~3-unit bounding box
-      const bbox = new Box3().setFromObject(gltf.scene);
-      const centre = new Vector3();
-      bbox.getCenter(centre);
-      gltf.scene.position.sub(centre);
-      gltf.scene.updateMatrixWorld(true);
-
-      const bbox2 = new Box3().setFromObject(gltf.scene);
-      const sv = new Vector3();
-      bbox2.getSize(sv);
-      const maxDim = Math.max(sv.x, sv.y, sv.z);
-      gltf.scene.scale.setScalar(maxDim > 0 ? 3 / maxDim : 1);
-      gltf.scene.updateMatrixWorld(true);
-
-      // Collect meshes ──────────────────────────────────────────────────────
-      const meshes: Mesh[] = [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      gltf.scene.traverse((child: any) => {
-        if ((child as Mesh).isMesh) meshes.push(child as Mesh);
-      });
-      if (meshes.length === 0) return;
-
-      // Sample positions + normals ──────────────────────────────────────────
-      const positions = new Float32Array(particleCount * 3);
-      const normals = new Float32Array(particleCount * 3);
+      // Per-sphere random seeds (stay fixed through model swaps so particle
+      // identities remain consistent and scatter directions are stable).
       const seeds = new Float32Array(particleCount);
-
-      const tempPos = new Vector3();
-      const tempNorm = new Vector3();
-      const normMatrix = new Matrix3();
-
-      let filled = 0;
-      const perMesh = Math.floor(particleCount / meshes.length);
-
-      for (let m = 0; m < meshes.length; m++) {
-        const mesh = meshes[m];
-        const count = m < meshes.length - 1 ? perMesh : particleCount - filled;
-
-        normMatrix.getNormalMatrix(mesh.matrixWorld);
-        const sampler = new MeshSurfaceSampler(mesh).build();
-
-        for (let i = 0; i < count; i++) {
-          sampler.sample(tempPos, tempNorm);
-          mesh.localToWorld(tempPos);
-          tempNorm.applyMatrix3(normMatrix).normalize();
-
-          const b = (filled + i) * 3;
-          positions[b] = tempPos.x;
-          positions[b + 1] = tempPos.y;
-          positions[b + 2] = tempPos.z;
-          normals[b] = tempNorm.x;
-          normals[b + 1] = tempNorm.y;
-          normals[b + 2] = tempNorm.z;
-          seeds[filled + i] = Math.random();
-        }
-        filled += count;
-      }
+      for (let i = 0; i < particleCount; i++) seeds[i] = Math.random();
 
       // Sphere geometry with per-instance attributes ─────────────────────────
       // Detail 0 = 20 faces / 12 vertices per sphere (vs 80 faces / 42 at detail 1).
@@ -328,40 +671,45 @@ export default function ParticlesHologram({
         "instanceSeed",
         new InstancedBufferAttribute(seeds, 1),
       );
-      sphereGeo.setAttribute(
-        "instanceNormal",
-        new InstancedBufferAttribute(normals, 3),
-      );
-      // Sphere centre positions — used to sample noise at a coherent per-sphere
-      // point so the whole sphere moves as a rigid body within the flow field.
-      sphereGeo.setAttribute(
-        "instancePos",
-        new InstancedBufferAttribute(positions, 3),
-      );
+      // .slice() — buffer gets its own copy; cache keeps its original array so
+      // writing new model data during transitions never corrupts cached geometry.
+      sphereGeo.setAttribute("instanceNormal",
+        new InstancedBufferAttribute(normals.slice(), 3));
+      sphereGeo.setAttribute("instancePos",
+        new InstancedBufferAttribute(positions.slice(), 3));
+      // Target attributes start identical to current — transitionProgress=0
+      // means blendPos = instPos so no visual difference on first render.
+      sphereGeo.setAttribute("instanceNormalTarget",
+        new InstancedBufferAttribute(normals.slice(), 3));
+      sphereGeo.setAttribute("instancePosTarget",
+        new InstancedBufferAttribute(positions.slice(), 3));
 
-      const instancedMesh = new InstancedMesh(
-        sphereGeo,
-        null as any,
-        particleCount,
-      );
-      const dummy = new Object3D();
-      for (let i = 0; i < particleCount; i++) {
-        const b = i * 3;
-        dummy.position.set(positions[b], positions[b + 1], positions[b + 2]);
-        dummy.updateMatrix();
-        instancedMesh.setMatrixAt(i, dummy.matrix);
-      }
+      // Sphere positioning is done entirely in the shader via instancePos/blendPos,
+      // so instance matrices can stay as identity — no per-instance matrix loop needed.
+      const instancedMesh = new InstancedMesh(sphereGeo, null as any, particleCount);
       instancedMesh.instanceMatrix.needsUpdate = true;
 
+      // Store buffer refs for transition swaps
+      posAttrRef.current        = sphereGeo.getAttribute('instancePos')        as InstancedBufferAttribute;
+      normAttrRef.current       = sphereGeo.getAttribute('instanceNormal')     as InstancedBufferAttribute;
+      posAttrTargetRef.current  = sphereGeo.getAttribute('instancePosTarget')  as InstancedBufferAttribute;
+      normAttrTargetRef.current = sphereGeo.getAttribute('instanceNormalTarget') as InstancedBufferAttribute;
+      transitionStateRef.current = 'idle';
+      transitionTimeRef.current  = 0;
+
       // TSL uniforms ────────────────────────────────────────────────────────
-      const initLightDir = new Vector3(lightX, lightY, lightZ).normalize();
       const u = {
         color: uniform(new Color(color)),
         floatAmp: uniform(floatAmp),
         sphereSize: uniform(sphereSize),
         ambient: uniform(ambient),
         wrap: uniform(wrap),
-        lightDir: uniform(initLightDir),
+        light1Pos:       uniform(new Vector3(light1X, light1Y, light1Z)),
+        light1Color:     uniform(new Color(light1Color)),
+        light1Intensity: uniform(light1Intensity),
+        light2Pos:       uniform(new Vector3(light2X, light2Y, light2Z)),
+        light2Color:     uniform(new Color(light2Color)),
+        light2Intensity: uniform(light2Intensity),
         volumeStrength: uniform(volumeStrength),
         noiseAmp: uniform(noiseAmp),
         noiseScale: uniform(noiseScale),
@@ -380,17 +728,26 @@ export default function ParticlesHologram({
         mouseGlowPassive: uniform(mouseGlowPassive),
         mouseGlowActive:  uniform(mouseGlowActive),
         mouseGlowPow:     uniform(mouseGlowPow),
-        mouseGlowEnergy:  uniform(0),   // JS-side decaying glow energy, independent of spring
+        mouseGlowEnergy:      uniform(0), // JS-side decaying glow energy, independent of spring
+        transitionProgress:    uniform(0), // 0 = current model, 1 = target model
+        transitionGlowScale:   uniform(transitionGlowScale),
       };
       uniformsRef.current = u;
 
       // TSL material ────────────────────────────────────────────────────────
       const material = new MeshBasicNodeMaterial() as any;
 
-      const seedAttr = attribute("instanceSeed", "float");
-      const instNorm = attribute("instanceNormal", "vec3");
-      // Per-sphere centre position for coherent noise sampling
-      const instPos = attribute("instancePos", "vec3");
+      const seedAttr     = attribute("instanceSeed",          "float");
+      const instNorm     = attribute("instanceNormal",         "vec3");
+      const instPos      = attribute("instancePos",            "vec3");
+      const instNormTgt  = attribute("instanceNormalTarget",   "vec3");
+      const instPosTgt   = attribute("instancePosTarget",      "vec3");
+
+      // Smoothly blend sphere centres and normals between current and target model.
+      // Instance matrices are identity — the centre position is fully in the shader.
+      const blendPos  = mix(instPos,  instPosTgt,  u.transitionProgress);
+      const blendNorm = normalize(mix(instNorm, instNormTgt, u.transitionProgress));
+
       const phase = seedAttr.mul(Math.PI * 2);
 
       // ── Animation ────────────────────────────────────────────────────────
@@ -420,7 +777,7 @@ export default function ParticlesHologram({
 
       // 3. Instability mask — slow independent noise field, different axes so
       //    it doesn't correlate with the wave field.
-      const maskCoord = instPos
+      const maskCoord = blendPos
         .mul(u.maskScale)
         .add(
           vec3(
@@ -438,7 +795,7 @@ export default function ParticlesHologram({
 
       // 2. Noise flow (macro waves) — amplitude scaled by the mask so only
       //    regions with high mask value are visibly displaced.
-      const noiseCoord = instPos
+      const noiseCoord = blendPos
         .mul(u.noiseScale)
         .add(
           vec3(
@@ -464,7 +821,7 @@ export default function ParticlesHologram({
       //    Every particle in the radius gets the SAME displacement direction →
       //    filled disc.  Scatter adds per-particle variation (cone around velDir)
       //    without breaking the filled-circle silhouette.
-      const toMouse    = u.mousePos.sub(instPos);
+      const toMouse    = u.mousePos.sub(blendPos);
       const dist       = toMouse.length();
       const falloff    = clamp(
         float(1.0).sub(dist.div(u.mouseRadius)),
@@ -490,45 +847,43 @@ export default function ParticlesHologram({
         .mul(u.mouseStrength)
         .mul(falloff.mul(falloff));
 
+      // blendPos is the sphere centre (instance matrices are identity).
+      // positionLocal * sphereSize is the tiny icosahedron offset around the centre.
       material.positionNode = positionLocal
         .mul(u.sphereSize)
+        .add(blendPos)
         .add(floatDisp)
         .add(noiseDisp)
         .add(mouseDisp);
 
-      // ── Shading: figure-level + sphere-local volume ───────────────────────
+      // ── Shading: two-light model with figure + sphere volume ─────────────
       //
-      // Figure shading  — baked surface normal → overall light/shadow of figure.
-      // Sphere shading  — normalLocal (icosahedron vertex) → 3-D depth per sphere.
-      //
-      // Wrapped diffuse: (dot(n,l) + wrap) / (1 + wrap)
-      // volumeStrength blends between flat (figure only) and volumetric
-      // (figure × sphere).
+      // Each light has a world-space position, color, and intensity.
+      // Direction is computed per-particle: normalize(lightPos - blendPos).
+      // Both lights use wrapped diffuse and are summed before the ambient floor.
 
-      const lightNorm = normalize(u.lightDir);
+      const lightContrib = (lightPos: any, lightCol: any, lightInt: any) => {
+        const dir = normalize(lightPos.sub(blendPos));
+        const figW = clamp(
+          dot(blendNorm, dir).add(u.wrap).div(float(1.0).add(u.wrap)),
+          float(0), float(1),
+        );
+        const sphW = clamp(
+          dot(normalize(normalLocal), dir).add(u.wrap).div(float(1.0).add(u.wrap)),
+          float(0), float(1),
+        );
+        const diffuse = mix(figW, figW.mul(sphW), u.volumeStrength);
+        return lightCol.mul(diffuse).mul(lightInt);
+      };
 
-      const figureWrapped = clamp(
-        dot(normalize(instNorm), lightNorm)
-          .add(u.wrap)
-          .div(float(1.0).add(u.wrap)),
-        float(0),
-        float(1),
+      const litColor =
+        lightContrib(u.light1Pos, u.light1Color, u.light1Intensity)
+          .add(lightContrib(u.light2Pos, u.light2Color, u.light2Intensity));
+
+      // Combine with base particle color, add ambient floor
+      const shadedColor = u.color.mul(
+        clamp(litColor.add(u.ambient), float(0), float(1)),
       );
-
-      const sphereWrapped = clamp(
-        dot(normalize(normalLocal), lightNorm)
-          .add(u.wrap)
-          .div(float(1.0).add(u.wrap)),
-        float(0),
-        float(1),
-      );
-
-      const combined = mix(
-        figureWrapped,
-        figureWrapped.mul(sphereWrapped),
-        u.volumeStrength,
-      );
-      const shading = u.ambient.add(combined.mul(float(1.0).sub(u.ambient)));
 
       // ── Mouse glow — two independent layers ──────────────────────────────
       //
@@ -540,22 +895,218 @@ export default function ParticlesHologram({
       //
       //  Both share the same glow color and falloff curve (mouseGlowPow).
       //  glowPow > 1 concentrates brightness toward the cursor centre.
-      const baseColor    = u.color.mul(shading);
       const glowFalloff  = pow(clamp(falloff, float(0), float(1)), u.mouseGlowPow);
       const passiveGlow  = glowFalloff.mul(u.mouseGlowPassive);
       // Active glow uses mouseGlowEnergy — a JS-side value that decays at its
       // own rate, independently of the spring physics.  This lets the glow
       // linger as a smooth trail even after particles have physically returned.
       const activeGlow   = glowFalloff.mul(u.mouseGlowEnergy).mul(u.mouseGlowActive);
-      const glowFactor   = clamp(passiveGlow.add(activeGlow), float(0), float(1));
-      material.colorNode = mix(baseColor, u.mouseGlowColor, glowFactor);
+      const mouseGlowFactor = clamp(passiveGlow.add(activeGlow), float(0), float(1));
+
+      // ── Transition glow — particles with greatest displacement bloom the most ──
+      //
+      // morphActivity is a parabola over transitionProgress: peaks at mid-morph
+      // (p=0.5 → value=1) and is 0 at the start and end.  This means the bloom
+      // builds as particles start moving and fades as they settle.
+      //
+      // dispMag normalises each particle's travel distance (source→target) so
+      // far-travelling particles glow brightest.  Scale 0.35 → fully lit at ~3u.
+      const morphActivity = u.transitionProgress
+        .mul(float(1).sub(u.transitionProgress))
+        .mul(float(4));
+      const transDispMag  = instPosTgt.sub(instPos).length();
+      const transNorm     = clamp(transDispMag.mul(float(0.35)), float(0), float(1));
+      const transGlow     = transNorm.mul(morphActivity).mul(u.transitionGlowScale);
+
+      const glowFactor   = clamp(mouseGlowFactor.add(transGlow), float(0), float(1));
+      material.colorNode = mix(shadedColor, u.mouseGlowColor, glowFactor);
 
       instancedMesh.material = material;
-      const group = new Group();
-      group.position.set(modelX, modelY, modelZ);
-      group.add(instancedMesh);
-      scene.add(group);
-      groupRef.current = group;
+
+      // Two-group hierarchy:
+      //   posGroup  — world position (modelX/Y/Z), no rotation
+      //   rotGroup  — Y-axis auto-rotation, child of posGroup, holds particles
+      //
+      // The cylinder lives in posGroup so it shares the same position offset
+      // but is NOT affected by rotGroup's rotation — it stays fixed in world space.
+      const posGroup = new Group();
+      posGroup.position.set(modelX, modelY, modelZ);
+      const rotGroup = new Group();
+      rotGroup.add(instancedMesh);
+      posGroup.add(rotGroup);
+
+      // ── Transparent cylinder ──────────────────────────────────────────────
+      // Open-ended cylinder enclosing the hologram; bottom sits at Y=0 (matching
+      // the GLB bbox-bottom normalisation) so all models fit inside consistently.
+      // Added to posGroup so it moves with the model but never rotates.
+      const cylGeo = new CylinderGeometry(cylRadius, cylRadius, cylHeight, 64, 1, true);
+      const cylMat = new MeshBasicNodeMaterial() as any;
+      cylMat.transparent = true;
+      cylMat.side        = DoubleSide;
+      cylMat.depthWrite  = false;
+
+      const uCylColor       = uniform(new Color(cylColor));
+      const uCylNoiseScale  = uniform(cylNoiseScale);
+      const uCylLineWidth   = uniform(cylLineWidth);
+      const uCylFresnelPow  = uniform(cylFresnelPow);
+      const uCylBaseOpacity = uniform(cylBaseOpacity);
+      const uCylLineOpacity = uniform(cylLineOpacity);
+      const uCylNoiseSpeed  = uniform(cylNoiseSpeed);
+      const uCylPulseSpeed  = uniform(cylPulseSpeed);
+      const uCylPulseAmp    = uniform(cylPulseAmp);
+      const uCylPulseEasing = uniform(cylPulseEasing);
+      const uCylWaveFreq    = uniform(cylWaveFreq);
+      const uCylTexRepeat   = uniform(cylTexRepeat);
+
+      // Triangle texture — white lines on dark background.
+      // loadAsync ensures the image is fully decoded before we touch any
+      // sampler properties; setting needsUpdate on a null image crashes WebGPU.
+      const triTex = await new TextureLoader().loadAsync("/assets/triangle-texture.png");
+      if (disposed) return;
+      triTex.wrapS           = triTex.wrapT = RepeatWrapping;
+      triTex.magFilter       = LinearFilter;
+      triTex.minFilter       = LinearMipmapLinearFilter;
+      triTex.generateMipmaps = true;
+      triTex.anisotropy      = 16;
+      triTex.needsUpdate     = true;
+
+      // Fresnel rim — bright at grazing angles (edges of cylinder), dark when
+      // surface directly faces the camera.  abs() handles back-face normals.
+      const NdotV      = abs(normalView.z);
+      const fresnelRim = pow(
+        clamp(float(1).sub(NdotV), float(0), float(1)),
+        uCylFresnelPow,
+      );
+
+      // Animated noise coords — two separate time offsets so the two frequencies
+      // drift independently, giving a more organic crystalline feel.
+      const cylTimeOff1 = vec3(
+        time.mul(uCylNoiseSpeed),
+        float(0),
+        time.mul(uCylNoiseSpeed).mul(float(0.7)),
+      );
+      const cylTimeOff2 = vec3(
+        float(0),
+        time.mul(uCylNoiseSpeed).mul(float(0.5)),
+        time.mul(uCylNoiseSpeed).mul(float(1.3)),
+      );
+
+      // Two-frequency noise zero-crossings create a crystalline mesh pattern.
+      // At zero-crossings, abs(noise) ≈ 0 → 1 - smoothstep(...) ≈ 1 (bright line).
+      const cylP1 = positionLocal.mul(uCylNoiseScale).add(cylTimeOff1);
+      const cylP2 = positionLocal
+        .mul(uCylNoiseScale.mul(float(1.87)))
+        .add(vec3(17.3, 5.7, 23.1))
+        .add(cylTimeOff2);
+      const cylLine1   = float(1).sub(tslSmoothstep(float(0), uCylLineWidth, abs(mx_noise_float(cylP1))));
+      const cylLine2   = float(1).sub(tslSmoothstep(float(0), uCylLineWidth, abs(mx_noise_float(cylP2))));
+      const cylLinePat = clamp(cylLine1.add(cylLine2), float(0), float(1));
+
+      // Traveling wave pulse — the sine phase is offset by positionLocal.y so
+      // each height on the cylinder is at a different point in the cycle.
+      // Result: a bright ring that sweeps up the cylinder continuously.
+      // Easing (pow) sharpens the ring into a thin crisp band; at easing=1 the
+      // ring is wide and soft, at higher values it becomes a narrow bright flash.
+      const cylPhase        = time.mul(uCylPulseSpeed).sub(positionLocal.y.mul(uCylWaveFreq));
+      const cylSineRaw      = sin(cylPhase).mul(float(0.5)).add(float(0.5));
+      const cylPulse        = pow(cylSineRaw, uCylPulseEasing);
+      const cylPulsedLineOp = uCylLineOpacity.mul(
+        float(1).sub(uCylPulseAmp).add(uCylPulseAmp.mul(cylPulse)),
+      );
+
+      // Triangle texture sampled at tiled cylinder UVs.
+      // .r channel holds the brightness: white triangle lines → 1, dark bg → 0.
+      // This brightness is used as a detail mask — it makes the dark parts of the
+      // texture fully transparent and only shows the white triangle geometry.
+      const cylTexUV  = uv().mul(uCylTexRepeat);
+      const texBright = tslTexture(triTex, cylTexUV).r;
+
+      // Final opacity layers:
+      //   detail  = triangle texture × noise-line mask × Fresnel × pulsed opacity
+      //             → triangles visible only inside noise-line bands, at rim edges
+      //   rim     = subtle Fresnel base glow with no texture/noise requirement
+      const detailOp = texBright
+        .mul(cylLinePat)
+        .mul(fresnelRim)
+        .mul(cylPulsedLineOp);
+      const cylFinalOp = clamp(
+        fresnelRim.mul(uCylBaseOpacity).add(detailOp),
+        float(0), float(1),
+      );
+
+      cylMat.colorNode   = uCylColor;
+      cylMat.opacityNode = cylFinalOp;
+
+      const cylMesh = new Mesh(cylGeo, cylMat);
+      cylMesh.position.set(0, cylHeight / 2 + cylY, 0);
+      cylMesh.visible    = cylVisible;
+      posGroup.add(cylMesh);
+      cylMeshRef.current = cylMesh;
+      cylUniRef.current  = {
+        uCylColor, uCylNoiseScale, uCylLineWidth,
+        uCylFresnelPow, uCylBaseOpacity, uCylLineOpacity,
+        uCylNoiseSpeed, uCylPulseSpeed, uCylPulseAmp, uCylPulseEasing, uCylWaveFreq, uCylTexRepeat,
+      };
+
+      // ── Halo rings — top + bottom, rotating with autoRotateSpeed ─────────
+      //
+      // TorusGeometry lies in the XY plane → rotation.x = -PI/2 makes it flat.
+      // Arc positioning around Y uses a wrapper Group so the two rotations
+      // stay independent (no Euler coupling).
+      //
+      // Both top and bottom ring groups live inside ringRotGroup, which spins
+      // at the same rate as the particle rotGroup in the animate loop.
+      {
+        const gapRad  = ringGap * (Math.PI / 180);
+        const arcSpan = Math.PI - gapRad;
+
+        const makeRingGeo = () =>
+          new TorusGeometry(ringRadius, ringThickness, 8, 80, arcSpan);
+
+        const ringMat = new MeshBasicNodeMaterial() as any;
+        ringMat.transparent = true;
+        ringMat.depthWrite  = false;
+        ringMat.side        = DoubleSide;
+
+        const uRingColor      = uniform(new Color(ringColor));
+        const uRingOpacity    = uniform(ringOpacity);
+        const uRingBrightness = uniform(ringBrightness);
+        ringMat.colorNode     = uRingColor.mul(uRingBrightness);
+        ringMat.opacityNode   = uRingOpacity;
+
+        const makeArcPair = (): [Mesh, Mesh, Group, Group] => {
+          const m1 = new Mesh(makeRingGeo(), ringMat); m1.rotation.x = -Math.PI / 2;
+          const m2 = new Mesh(makeRingGeo(), ringMat); m2.rotation.x = -Math.PI / 2;
+          const wA = new Group(); wA.rotation.y = gapRad / 2;           wA.add(m1);
+          const wB = new Group(); wB.rotation.y = Math.PI + gapRad / 2; wB.add(m2);
+          return [m1, m2, wA, wB];
+        };
+
+        const [r1, r2, w1, w2] = makeArcPair();
+        const topGroup = new Group();
+        topGroup.position.y = cylHeight + cylY;
+        topGroup.add(w1, w2);
+
+        const [r3, r4, w3, w4] = makeArcPair();
+        const botGroup = new Group();
+        botGroup.position.y = cylY;
+        botGroup.add(w3, w4);
+
+        const ringRotGroup = new Group();
+        ringRotGroup.add(topGroup, botGroup);
+        ringRotGroup.visible = ringVisible;
+        posGroup.add(ringRotGroup);
+
+        ringRotGroupRef.current = ringRotGroup;
+        ringTopGroupRef.current = topGroup;
+        ringBotGroupRef.current = botGroup;
+        ring1Ref.current = r1; ring2Ref.current = r2;
+        ring3Ref.current = r3; ring4Ref.current = r4;
+        ringUniRef.current = { uRingColor, uRingOpacity, uRingBrightness, ringMat, w1, w2, w3, w4 };
+      }
+
+      scene.add(posGroup);
+      groupRef.current = posGroup;
       onLoaded?.();
 
       // ── Post-processing pipeline ──────────────────────────────────────────
@@ -632,9 +1183,15 @@ export default function ParticlesHologram({
       let   glowEnergy    = 0;          // decays independently of the spring
       let   lastFrameTime = performance.now();
       let   mouseMoving   = false;
+      // Camera parallax spring — XY translation + Z roll
+      const CAM_RADIUS = camera.position.z;
+      let camX = 0, camY = 0, camRoll = 0;       // current state
+      let camVelX = 0, camVelY = 0, camVelRoll = 0; // spring velocities
       let   moveTimer     = 0;
       const MOVE_TIMEOUT  = 0.06;
       let   mouseEverMoved = false;
+      // Smoothstep: slow start → fast middle → slow end — cinematic easing
+      const smoothstep     = (p: number) => p * p * (3 - 2 * p);
 
       const onMouseMove = (e: MouseEvent) => {
         const rect = container.getBoundingClientRect();
@@ -644,9 +1201,12 @@ export default function ParticlesHologram({
         );
         raycaster.setFromCamera(mouseNDC, camera);
         if (raycaster.ray.intersectPlane(mousePlane, mouseHit)) {
-          // Convert world hit to model-local space (instPos is stored without
-          // group offset applied, so subtract the group's world position).
-          const localPos = mouseHit.clone().sub(group.position);
+          // Convert world hit → rotGroup-local space.
+          // instPos coords live in the rotGroup's local frame, so we must
+          // undo both the posGroup translation and the rotGroup rotation.
+          const localPos = mouseHit.clone()
+            .sub(posGroup.position)
+            .applyQuaternion(rotGroup.quaternion.clone().invert());
           targetMousePos.copy(localPos);
           // Initialise smooth position on first move to avoid a startup snap
           if (!mouseEverMoved) {
@@ -675,9 +1235,64 @@ export default function ParticlesHologram({
         moveTimer += delta;
         if (moveTimer > MOVE_TIMEOUT) mouseMoving = false;
 
+        // ── Model transition state machine ────────────────────────────────
+        //
+        //  deform-out — maskContrast → 0.2 (current model deforms into noise)
+        //  morphing   — transitionProgress 0→1 (particles flow to new model,
+        //               both shapes still deformed at maskContrast=0.2)
+        //  deform-in  — maskContrast 0.2 → user value (new model reforms)
+        const tState = transitionStateRef.current;
+
+        if (tState === 'deform-out') {
+          transitionTimeRef.current += delta;
+          const p   = Math.min(transitionTimeRef.current / transitionDeformDurRef.current, 1);
+          const tmc = transitionMaskContrastRef.current;
+          u.maskContrast.value = maskContrastRef.current + (tmc - maskContrastRef.current) * smoothstep(p);
+          if (p >= 1) {
+            u.maskContrast.value = tmc;
+            transitionTimeRef.current = 0;
+            transitionStateRef.current = 'morphing';
+          }
+        } else if (tState === 'morphing') {
+          transitionTimeRef.current += delta;
+          const p  = Math.min(transitionTimeRef.current / transitionMorphDurRef.current, 1);
+          u.transitionProgress.value = smoothstep(p);
+          if (p >= 1) {
+            // Commit target → current so the next transition starts from here
+            const srcPos  = posAttrRef.current!.array  as Float32Array;
+            const tgtPos  = posAttrTargetRef.current!.array  as Float32Array;
+            const srcNorm = normAttrRef.current!.array as Float32Array;
+            const tgtNorm = normAttrTargetRef.current!.array as Float32Array;
+            srcPos.set(tgtPos);
+            srcNorm.set(tgtNorm);
+            posAttrRef.current!.needsUpdate  = true;
+            normAttrRef.current!.needsUpdate = true;
+            u.transitionProgress.value = 0;
+            transitionTimeRef.current = 0;
+            transitionStateRef.current = 'deform-in';
+          }
+        } else if (tState === 'deform-in') {
+          transitionTimeRef.current += delta;
+          const p   = Math.min(transitionTimeRef.current / transitionReformDurRef.current, 1);
+          const tmc = transitionMaskContrastRef.current;
+          u.maskContrast.value = tmc + (maskContrastRef.current - tmc) * smoothstep(p);
+          if (p >= 1) {
+            u.maskContrast.value = maskContrastRef.current;
+            transitionStateRef.current = 'idle';
+          }
+        }
+
+        // Manual Y rotation — replaces OrbitControls.autoRotate so only the
+        // particle mesh (rotGroup) spins while the cylinder stays fixed.
+        // Speed mapping matches OrbitControls convention: 1.0 ≈ one full
+        // rotation every 60 s  ( 2π / 60 rad·s⁻¹ per unit of speed ).
+        const rotDelta = (2 * Math.PI / 60) * autoRotateSpeedRef.current * delta;
+        rotGroup.rotation.y    += rotDelta;
+        if (ringRotGroupRef.current) ringRotGroupRef.current.rotation.y += rotDelta;
+
         // Keep the projection plane perpendicular to the current camera view,
         // centred on the model — works correctly from any orbit angle.
-        group.getWorldPosition(modelCenter);
+        posGroup.getWorldPosition(modelCenter);
         camera.getWorldDirection(cameraDir);
         mousePlane.setFromNormalAndCoplanarPoint(cameraDir, modelCenter);
 
@@ -741,7 +1356,36 @@ export default function ParticlesHologram({
         glowEnergy *= Math.exp(-mouseGlowDecayRef.current * delta);
         u.mouseGlowEnergy.value = glowEnergy;
 
+        // ── Camera parallax spring ────────────────────────────────────────
+        // Mouse X/Y → camera translates on world X/Y.
+        // Mouse X   → camera rolls on its local Z axis (tilt).
+        // Spring-damper gives momentum + smooth settle.
+        {
+          const intensity  = camIntensityRef.current;
+          const k          = camStiffnessRef.current;
+          const c          = camDampingRef.current;
+          const nx         = mouseEverMoved ? mouseNDC.x : 0;
+          const ny         = mouseEverMoved ? mouseNDC.y : 0;
+          const targetX    =  nx * intensity * 0.05;
+          const targetY    =  ny * intensity * 0.05;
+          const targetRoll = -nx * intensity * 0.008; // negative: tilt toward motion
+          camVelX    += ((targetX    - camX)    * k - camVelX    * c) * delta;
+          camVelY    += ((targetY    - camY)    * k - camVelY    * c) * delta;
+          camVelRoll += ((targetRoll - camRoll) * k - camVelRoll * c) * delta;
+          camX    += camVelX    * delta;
+          camY    += camVelY    * delta;
+          camRoll += camVelRoll * delta;
+          // Pure offset — camera translates without pivoting toward origin.
+          // Rotation is only Z roll (bank/tilt), keeping the forward direction
+          // locked along -Z world axis.
+          camera.position.set(camX, camY, CAM_RADIUS);
+          camera.rotation.set(0, 0, camRoll);
+        }
+
         stats.begin();
+        // Enforce no camera auto-rotation every frame — rotGroup handles the
+        // particle spin and this guards against HMR / stale-effect scenarios.
+        controls.autoRotate = false;
         controls.update();
         if (postProcessing) {
           postProcessing.renderAsync();
@@ -758,8 +1402,30 @@ export default function ParticlesHologram({
         container.removeEventListener("mouseleave", onMouseLeave);
         sphereGeo.dispose();
         material.dispose();
+        cylGeo.dispose();
+        cylMat.dispose();
+        triTex.dispose();
         controls.dispose();
         stats.dom.remove();
+        if (ringUniRef.current) ringUniRef.current.ringMat.dispose();
+        ring1Ref.current?.geometry.dispose();
+        ring2Ref.current?.geometry.dispose();
+        ring3Ref.current?.geometry.dispose();
+        ring4Ref.current?.geometry.dispose();
+        cylMeshRef.current    = null;
+        cylUniRef.current     = null;
+        ringRotGroupRef.current = null;
+        ringTopGroupRef.current = null;
+        ringBotGroupRef.current = null;
+        ring1Ref.current = null; ring2Ref.current = null;
+        ring3Ref.current = null; ring4Ref.current = null;
+        ringUniRef.current = null;
+        if (gridUniRef.current) gridUniRef.current.gridMat.dispose();
+        gridMeshRef.current?.geometry.dispose();
+        gridMeshRef.current = null;
+        gridUniRef.current  = null;
+        bgCtxRef.current   = null;
+        bgTexRef.current   = null;
       };
     })();
 
@@ -776,13 +1442,84 @@ export default function ParticlesHologram({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, particleCount]);
+  }, [particleCount]);
+
+  // ── Animate model transition on url change ────────────────────────────────
+  // Skip the very first run (initial load is handled by the main effect above).
+  useEffect(() => {
+    if (isFirstUrlRef.current) {
+      isFirstUrlRef.current = false;
+      return;
+    }
+    if (!uniformsRef.current || !posAttrTargetRef.current || !normAttrTargetRef.current) return;
+
+    // Capture whether we're idle before the async call so the interrupted path
+    // below stays consistent even when the microtask resolves.
+    const wasIdle = transitionStateRef.current === 'idle';
+
+    // sampleGLBGeometry resolves from cache (models are preloaded) — nearly sync.
+    sampleGLBGeometry(url, particleCount).then(({ positions: newPos, normals: newNorm }) => {
+      if (!posAttrTargetRef.current || !normAttrTargetRef.current || !uniformsRef.current) return;
+
+      // If a morph was already in progress, commit the current visual position
+      // so the new transition starts from where particles actually are.
+      const prog = uniformsRef.current.transitionProgress.value as number;
+      if (prog > 0) {
+        const srcPos  = posAttrRef.current!.array  as Float32Array;
+        const tgtPos  = posAttrTargetRef.current.array  as Float32Array;
+        const srcNorm = normAttrRef.current!.array as Float32Array;
+        const tgtNorm = normAttrTargetRef.current.array as Float32Array;
+        for (let i = 0; i < srcPos.length; i++) {
+          srcPos[i]  = srcPos[i]  * (1 - prog) + tgtPos[i]  * prog;
+          srcNorm[i] = srcNorm[i] * (1 - prog) + tgtNorm[i] * prog;
+        }
+        posAttrRef.current!.needsUpdate  = true;
+        normAttrRef.current!.needsUpdate = true;
+        uniformsRef.current.transitionProgress.value = 0;
+      }
+
+      // Write new target geometry
+      (posAttrTargetRef.current.array  as Float32Array).set(newPos);
+      (normAttrTargetRef.current.array as Float32Array).set(newNorm);
+      posAttrTargetRef.current.needsUpdate  = true;
+      normAttrTargetRef.current.needsUpdate = true;
+      transitionTimeRef.current = 0;
+
+      if (wasIdle) {
+        // Normal start: first deform the current model
+        transitionStateRef.current = 'deform-out';
+      } else {
+        // Already mid-transition — snap to deformed value and morph directly
+        uniformsRef.current.maskContrast.value = transitionMaskContrastRef.current;
+        transitionStateRef.current = 'morphing';
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url]);
+
+  // ── Background preload ────────────────────────────────────────────────────
+  // Kick off sampleGLBGeometry for every preloadUrl as soon as particleCount
+  // is known.  Results land in geometryCache so transitions are instant.
+  useEffect(() => {
+    for (const u of preloadUrls) {
+      sampleGLBGeometry(u, particleCount).catch(() => {/* ignore preload errors */});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [particleCount]);
 
   // ── Realtime updates — mutate uniforms, no rebuild ────────────────────────
+
+  // Belt-and-suspenders: ensure camera autoRotate is always off.
+  // Particle rotation is handled entirely via rotGroup.rotation.y in the loop.
+  // This effect also runs on HMR updates where the main effect hasn't re-run.
   useEffect(() => {
-    if (controlsRef.current)
-      controlsRef.current.autoRotateSpeed = autoRotateSpeed;
-  }, [autoRotateSpeed]);
+    if (controlsRef.current) {
+      controlsRef.current.autoRotate = false;
+      controlsRef.current.enabled    = false;
+    }
+  });
+
+  useEffect(() => { autoRotateSpeedRef.current = autoRotateSpeed; }, [autoRotateSpeed]);
 
   useEffect(() => {
     uniformsRef.current?.color.value.set(color);
@@ -822,7 +1559,9 @@ export default function ParticlesHologram({
     if (uniformsRef.current) uniformsRef.current.maskSpeed.value = maskSpeed;
   }, [maskSpeed]);
   useEffect(() => {
-    if (uniformsRef.current)
+    maskContrastRef.current = maskContrast;
+    // Only push directly while idle — active transitions own the uniform
+    if (uniformsRef.current && transitionStateRef.current === 'idle')
       uniformsRef.current.maskContrast.value = maskContrast;
   }, [maskContrast]);
 
@@ -868,14 +1607,141 @@ export default function ParticlesHologram({
     if (groupRef.current) groupRef.current.position.set(modelX, modelY, modelZ);
   }, [modelX, modelY, modelZ]);
 
-  // Light direction: update the single vec3 uniform whenever any component changes
+  // Lights
   useEffect(() => {
-    if (uniformsRef.current) {
-      uniformsRef.current.lightDir.value
-        .set(lightX, lightY, lightZ)
-        .normalize();
-    }
-  }, [lightX, lightY, lightZ]);
+    uniformsRef.current?.light1Pos.value.set(light1X, light1Y, light1Z);
+  }, [light1X, light1Y, light1Z]);
+  useEffect(() => {
+    uniformsRef.current?.light1Color.value.set(light1Color);
+  }, [light1Color]);
+  useEffect(() => {
+    if (uniformsRef.current) uniformsRef.current.light1Intensity.value = light1Intensity;
+  }, [light1Intensity]);
+  useEffect(() => {
+    uniformsRef.current?.light2Pos.value.set(light2X, light2Y, light2Z);
+  }, [light2X, light2Y, light2Z]);
+  useEffect(() => {
+    uniformsRef.current?.light2Color.value.set(light2Color);
+  }, [light2Color]);
+  useEffect(() => {
+    if (uniformsRef.current) uniformsRef.current.light2Intensity.value = light2Intensity;
+  }, [light2Intensity]);
+
+  // Transition controls — refs only (read in the animate loop, no GPU uniform needed)
+  useEffect(() => { transitionDeformDurRef.current    = transitionDeformDur;    }, [transitionDeformDur]);
+  useEffect(() => { transitionMorphDurRef.current     = transitionMorphDur;     }, [transitionMorphDur]);
+  useEffect(() => { transitionReformDurRef.current    = transitionReformDur;    }, [transitionReformDur]);
+  useEffect(() => { transitionMaskContrastRef.current = transitionMaskContrast; }, [transitionMaskContrast]);
+  useEffect(() => {
+    if (uniformsRef.current) uniformsRef.current.transitionGlowScale.value = transitionGlowScale;
+  }, [transitionGlowScale]);
+
+  // ── Cylinder realtime updates ─────────────────────────────────────────────
+  useEffect(() => {
+    if (cylMeshRef.current) cylMeshRef.current.visible = cylVisible;
+  }, [cylVisible]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylColor.value.set(cylColor);
+  }, [cylColor]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylNoiseScale.value = cylNoiseScale;
+  }, [cylNoiseScale]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylLineWidth.value = cylLineWidth;
+  }, [cylLineWidth]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylFresnelPow.value = cylFresnelPow;
+  }, [cylFresnelPow]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylBaseOpacity.value = cylBaseOpacity;
+  }, [cylBaseOpacity]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylLineOpacity.value = cylLineOpacity;
+  }, [cylLineOpacity]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylNoiseSpeed.value = cylNoiseSpeed;
+  }, [cylNoiseSpeed]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylPulseSpeed.value = cylPulseSpeed;
+  }, [cylPulseSpeed]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylPulseAmp.value = cylPulseAmp;
+  }, [cylPulseAmp]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylPulseEasing.value = cylPulseEasing;
+  }, [cylPulseEasing]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylWaveFreq.value = cylWaveFreq;
+  }, [cylWaveFreq]);
+  useEffect(() => {
+    if (cylUniRef.current) cylUniRef.current.uCylTexRepeat.value = cylTexRepeat;
+  }, [cylTexRepeat]);
+  // Geometry-level changes — swap the cylinder geometry without a full scene rebuild
+  useEffect(() => {
+    if (!cylMeshRef.current) return;
+    const old = cylMeshRef.current.geometry;
+    cylMeshRef.current.geometry = new CylinderGeometry(cylRadius, cylRadius, cylHeight, 64, 1, true);
+    cylMeshRef.current.position.y = cylHeight / 2 + cylY;
+    old.dispose();
+  }, [cylRadius, cylHeight, cylY]);
+
+  // Dot grid
+  useEffect(() => {
+    if (gridMeshRef.current) gridMeshRef.current.visible = gridVisible;
+  }, [gridVisible]);
+  useEffect(() => { gridUniRef.current?.uGridColor.value.set(gridColor); }, [gridColor]);
+  useEffect(() => { if (gridUniRef.current) gridUniRef.current.uGridBaseOpacity.value = gridBaseOpacity; }, [gridBaseOpacity]);
+  useEffect(() => { if (gridUniRef.current) gridUniRef.current.uGridWaveAmp.value     = gridWaveAmp;     }, [gridWaveAmp]);
+  useEffect(() => { if (gridUniRef.current) gridUniRef.current.uGridNoiseScale.value  = gridNoiseScale;  }, [gridNoiseScale]);
+  useEffect(() => { if (gridUniRef.current) gridUniRef.current.uGridWaveSpeed.value   = gridWaveSpeed;   }, [gridWaveSpeed]);
+  useEffect(() => { if (gridUniRef.current) gridUniRef.current.uGridDensity.value     = gridDensity;     }, [gridDensity]);
+  useEffect(() => { if (gridUniRef.current) gridUniRef.current.uGridDotSize.value     = gridDotSize;     }, [gridDotSize]);
+
+  // Halo ring
+  useEffect(() => {
+    if (ringRotGroupRef.current) ringRotGroupRef.current.visible = ringVisible;
+  }, [ringVisible]);
+  useEffect(() => {
+    if (ringUniRef.current) ringUniRef.current.uRingColor.value.set(ringColor);
+  }, [ringColor]);
+  useEffect(() => {
+    if (ringUniRef.current) ringUniRef.current.uRingOpacity.value = ringOpacity;
+  }, [ringOpacity]);
+  useEffect(() => {
+    if (ringUniRef.current) ringUniRef.current.uRingBrightness.value = ringBrightness;
+  }, [ringBrightness]);
+  // Geometry-level ring changes — rebuild all four arcs
+  useEffect(() => {
+    const meshes = [ring1Ref.current, ring2Ref.current, ring3Ref.current, ring4Ref.current];
+    const uni = ringUniRef.current;
+    if (meshes.some(m => !m) || !uni) return;
+    const gapRad  = ringGap * (Math.PI / 180);
+    const arcSpan = Math.PI - gapRad;
+    meshes.forEach(mesh => {
+      const old = mesh!.geometry;
+      mesh!.geometry = new TorusGeometry(ringRadius, ringThickness, 8, 80, arcSpan);
+      old.dispose();
+    });
+    const yA = gapRad / 2;
+    const yB = Math.PI + gapRad / 2;
+    uni.w1.rotation.y = yA; uni.w2.rotation.y = yB;
+    uni.w3.rotation.y = yA; uni.w4.rotation.y = yB;
+  }, [ringRadius, ringThickness, ringGap]);
+  // Keep rings in sync with cylinder top/bottom
+  useEffect(() => {
+    if (ringTopGroupRef.current) ringTopGroupRef.current.position.y = cylHeight + cylY;
+    if (ringBotGroupRef.current) ringBotGroupRef.current.position.y = cylY;
+  }, [cylHeight, cylY]);
+
+  // Camera parallax
+  useEffect(() => { camIntensityRef.current = camIntensity; }, [camIntensity]);
+  useEffect(() => { camStiffnessRef.current = camStiffness; }, [camStiffness]);
+  useEffect(() => { camDampingRef.current   = camDamping;   }, [camDamping]);
+
+  // Background gradient
+  useEffect(() => { bgColorCenterRef.current = bgColorCenter; redrawBg(); }, [bgColorCenter]);
+  useEffect(() => { bgColorMidRef.current    = bgColorMid;    redrawBg(); }, [bgColorMid]);
+  useEffect(() => { bgColorEdgeRef.current   = bgColorEdge;   redrawBg(); }, [bgColorEdge]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

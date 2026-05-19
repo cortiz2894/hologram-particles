@@ -1,0 +1,172 @@
+/* ── Root ──────────────────────────────────────────────────────────────────── */
+
+.root {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  pointer-events: auto;
+}
+
+/* ── Arrow buttons ─────────────────────────────────────────────────────────── */
+
+.arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.671);
+  transition: color 0.2s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.arrow svg {
+  filter: drop-shadow(0px 0px 2px rgba(255, 255, 255, 0));
+  transition: all 0.2s ease;
+}
+
+.arrow:hover {
+  color: rgb(255, 255, 255);
+}
+
+.arrow:hover svg {
+  filter: drop-shadow(0px 0px 2px rgba(255, 255, 255, 0.583));
+}
+
+/* ── Sliding track ─────────────────────────────────────────────────────────── */
+
+.track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Wide enough to show 1 side item on each side */
+  width: 440px;
+  height: 48px;
+  overflow: hidden;
+  /* Fade edges */
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 18%,
+    black 82%,
+    transparent 100%
+  );
+}
+
+/* ── Individual items ──────────────────────────────────────────────────────── */
+
+.item {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+
+  /* Each item occupies 160px of the track; offset shifts by that amount */
+  transform: translate(calc(-50% + var(--offset, 0) * 160px), -50%);
+  transition:
+    transform 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.35s ease;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 20px;
+
+  background: none;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+
+  opacity: 0.28;
+}
+
+.item:hover:not(.active) {
+  opacity: 0.55;
+}
+
+.item.active {
+  opacity: 1;
+  cursor: default;
+}
+
+/* ── Label text ────────────────────────────────────────────────────────────── */
+
+.label {
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.671);
+  user-select: none;
+  text-shadow: 0 0 8px white;
+  transition: color 0.25s;
+}
+
+.active .label {
+  color: rgb(255, 255, 255);
+}
+
+/* ── Corner bracket decoration ─────────────────────────────────────────────── */
+/* Four independent L-shapes in each corner of the active item */
+
+.corner {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-color: rgba(255, 255, 255, 0.671);
+
+  border-style: solid;
+  border-width: 0;
+  pointer-events: none;
+
+  /* Animate in when active */
+  opacity: 0;
+  animation: cornerIn 0.3s 0.1s ease forwards;
+}
+
+@keyframes cornerIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.tl {
+  top: 4px;
+  left: 4px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+
+.tr {
+  top: 4px;
+  right: 4px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+
+.bl {
+  bottom: 4px;
+  left: 4px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+
+.br {
+  bottom: 4px;
+  right: 4px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}
