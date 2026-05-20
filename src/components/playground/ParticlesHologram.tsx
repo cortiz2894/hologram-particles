@@ -530,7 +530,9 @@ export default function ParticlesHologram({
   };
 
   const onTransitionCompleteRef = useRef(onTransitionComplete);
-  useEffect(() => { onTransitionCompleteRef.current = onTransitionComplete; }, [onTransitionComplete]);
+  useEffect(() => {
+    onTransitionCompleteRef.current = onTransitionComplete;
+  }, [onTransitionComplete]);
 
   // Tracks the user's current maskContrast so deform-in can restore it
   const maskContrastRef = useRef(maskContrast);
@@ -573,7 +575,7 @@ export default function ParticlesHologram({
       if (disposed) return;
 
       renderer.setSize(container.clientWidth, container.clientHeight);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       container.appendChild(renderer.domElement);
 
       // Post-processing ─────────────────────────────────────────────────────
@@ -1455,8 +1457,15 @@ export default function ParticlesHologram({
         // actually moved the mouse over the canvas — prevents the passive glow
         // from appearing at the cursor's last stale position right after the
         // entrance animation ends.
-        if (!isEntranceRef.current && mouseEverMoved && u.entranceGlow.value < 1) {
-          u.entranceGlow.value = Math.min(u.entranceGlow.value + delta / 1.0, 1);
+        if (
+          !isEntranceRef.current &&
+          mouseEverMoved &&
+          u.entranceGlow.value < 1
+        ) {
+          u.entranceGlow.value = Math.min(
+            u.entranceGlow.value + delta / 1.0,
+            1,
+          );
         }
 
         // Manual Y rotation — replaces OrbitControls.autoRotate so only the
@@ -1878,13 +1887,17 @@ export default function ParticlesHologram({
   // ── Replay entrance animation ─────────────────────────────────────────────
   const isFirstReplayRef = useRef(true);
   useEffect(() => {
-    if (isFirstReplayRef.current) { isFirstReplayRef.current = false; return; }
+    if (isFirstReplayRef.current) {
+      isFirstReplayRef.current = false;
+      return;
+    }
     if (
       !uniformsRef.current ||
       !posAttrRef.current ||
       !normAttrRef.current ||
       !posAttrTargetRef.current
-    ) return;
+    )
+      return;
     // Zero out current positions — particles collapse back to origin
     (posAttrRef.current.array as Float32Array).fill(0);
     (normAttrRef.current.array as Float32Array).fill(0);

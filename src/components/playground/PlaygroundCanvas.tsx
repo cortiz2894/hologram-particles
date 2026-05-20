@@ -15,7 +15,7 @@ const MODELS: ModelOption[] = [
 ];
 
 export default function PlaygroundCanvas() {
-  const [hideLeva, setHideLeva] = useState(false);
+  const [hideLeva, setHideLeva] = useState(true);
   const [glbUrl, setGlbUrl] = useState<string | null>(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [activeModelIndex, setActiveModelIndex] = useState(0);
