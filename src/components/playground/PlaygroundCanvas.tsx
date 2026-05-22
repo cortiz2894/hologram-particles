@@ -4,7 +4,7 @@ import { useState, useCallback, useRef } from "react";
 import { Leva, useControls, folder, button } from "leva";
 import { LEVA_THEME } from "@/components/shared/theme";
 import HologramScene from "./HologramScene";
-import OverlayButtons from "@/components/overlay/OverlayButtons";
+import OverlayButtons, { DebugMode } from "@/components/overlay/OverlayButtons";
 import LoadingOverlay from "@/components/overlay/LoadingOverlay";
 import ModelSelector, { ModelOption } from "@/components/overlay/ModelSelector";
 import OverlayHeader from "../overlay/OverlayHeader";
@@ -21,6 +21,7 @@ export default function PlaygroundCanvas() {
   const [activeModelIndex, setActiveModelIndex] = useState(0);
   const [headerVisible, setHeaderVisible] = useState(false);
   const [replayTrigger, setReplayTrigger] = useState(0);
+  const [debugMode, setDebugMode] = useState<DebugMode>("none");
   const glbUrlRef = useRef<string | null>(null);
 
   const handleLoadGlb = useCallback((file: File) => {
@@ -730,7 +731,7 @@ export default function PlaygroundCanvas() {
         oneLineLabels={false}
         hidden={hideLeva}
       />
-      <OverlayHeader visible={headerVisible} />
+      <OverlayHeader visible={headerVisible && debugMode === "none"} />
       <div style={{ position: "fixed", inset: 0 }}>
         <HologramScene
           url={glbUrl ?? MODELS[activeModelIndex].url}
@@ -740,6 +741,7 @@ export default function PlaygroundCanvas() {
           entranceMorphDur={entranceMorphDur}
           entranceReformDur={entranceReformDur}
           replayTrigger={replayTrigger}
+          debugMode={debugMode}
           particleCount={particleCount}
           autoRotateSpeed={autoRotateSpeed}
           color={color}
@@ -826,6 +828,7 @@ export default function PlaygroundCanvas() {
           camIntensity={camIntensity}
           camStiffness={camStiffness}
           camDamping={camDamping}
+          debugMode={debugMode}
         />
       </div>
 
@@ -837,6 +840,8 @@ export default function PlaygroundCanvas() {
         hasGlb={glbUrl !== null}
         onLoadGlb={handleLoadGlb}
         onClearGlb={handleClearGlb}
+        debugMode={debugMode}
+        onDebugMode={setDebugMode}
       />
       <LoadingOverlay visible={isLoadingModel} />
       <ModelSelector

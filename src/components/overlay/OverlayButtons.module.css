@@ -60,3 +60,50 @@
 .fileInput {
   display: none;
 }
+
+/* ── Separator ───────────────────────────────────────────────────────────── */
+
+.separator {
+  width: 1px;
+  height: 20px;
+  background: var(--overlay-border);
+  opacity: 0.5;
+  align-self: center;
+}
+
+/* ── Debug group ─────────────────────────────────────────────────────────── */
+
+.debugGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.debugLabel {
+  font-family: var(--font-ibm-mono), monospace;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  color: var(--overlay-text);
+  opacity: 0.35;
+  padding-right: 2px;
+  user-select: none;
+}
+
+.debugBtn {
+  padding: 0 8px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  opacity: 0.5;
+}
+
+.debugBtn:hover {
+  opacity: 0.85;
+}
+
+.debugActive {
+  opacity: 1;
+  border-color: #88bbff;
+  color: #88bbff;
+  background: rgba(136, 187, 255, 0.08);
+}

@@ -26,6 +26,11 @@ import {
   RepeatWrapping,
   LinearFilter,
   LinearMipmapLinearFilter,
+  BufferGeometry,
+  BufferAttribute,
+  EdgesGeometry,
+  LineSegments,
+  LineBasicMaterial,
 } from "three";
 import {
   WebGPURenderer,
@@ -71,7 +76,8 @@ import Stats from "stats.js";
 // instant transitions.  When particleCount changes the main effect rebuilds
 // everything, so stale entries are effectively ignored (they'll never be hit
 // with a new count until they're re-populated by the preload effect).
-type GeometryData = { positions: Float32Array; normals: Float32Array };
+type MeshData = { vertices: Float32Array; indices: Uint32Array | null };
+type GeometryData = { positions: Float32Array; normals: Float32Array; meshData: MeshData[] };
 const geometryCache = new Map<string, GeometryData>();
 // Track in-flight requests to avoid duplicate sampling when preload and
 // a transition trigger the same URL simultaneously.
@@ -129,6 +135,7 @@ async function sampleGLBGeometry(
     const tempPos = new Vector3();
     const tempNorm = new Vector3();
     const normMatrix = new Matrix3();
+    const meshData: MeshData[] = [];
 
     let filled = 0;
     const perMesh = Math.floor(particleCount / meshes.length);
@@ -151,9 +158,24 @@ async function sampleGLBGeometry(
         normals[b + 2] = tempNorm.z;
       }
       filled += count;
+
+      // Collect world-space vertex data for wireframe debug overlay
+      const posAttr = mesh.geometry.attributes.position;
+      const vertices = new Float32Array(posAttr.count * 3);
+      const v = new Vector3();
+      for (let i = 0; i < posAttr.count; i++) {
+        v.fromBufferAttribute(posAttr, i);
+        v.applyMatrix4(mesh.matrixWorld);
+        vertices[i * 3] = v.x;
+        vertices[i * 3 + 1] = v.y;
+        vertices[i * 3 + 2] = v.z;
+      }
+      const rawIdx = mesh.geometry.index;
+      const indices = rawIdx ? new Uint32Array(rawIdx.array) : null;
+      meshData.push({ vertices, indices });
     }
 
-    const data: GeometryData = { positions, normals };
+    const data: GeometryData = { positions, normals, meshData };
     geometryCache.set(key, data);
     geometryInflight.delete(key);
     return data;
@@ -371,6 +393,8 @@ export interface ParticlesHologramProps {
   entranceReformDur?: number;
   /** Increment to re-trigger the entrance animation */
   replayTrigger?: number;
+  /** Debug visualization mode for breakdown / presentation purposes */
+  debugMode?: "none" | "wireframe" | "flat" | "normals" | "noise" | "lit" | "light1" | "light2";
 }
 
 export default function ParticlesHologram({
@@ -467,6 +491,7 @@ export default function ParticlesHologram({
   entranceMorphDur = 0.7,
   entranceReformDur = 0.35,
   replayTrigger = 0,
+  debugMode = "none",
 }: ParticlesHologramProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -530,6 +555,9 @@ export default function ParticlesHologram({
   };
 
   const onTransitionCompleteRef = useRef(onTransitionComplete);
+  const instancedMeshRef = useRef<InstancedMesh | null>(null);
+  const wireframeGroupRef = useRef<Group | null>(null);
+  const debugModeRef = useRef(debugMode);
   useEffect(() => {
     onTransitionCompleteRef.current = onTransitionComplete;
   }, [onTransitionComplete]);
@@ -693,10 +721,8 @@ export default function ParticlesHologram({
       controlsRef.current = controls;
 
       // Load + sample initial GLB ───────────────────────────────────────────
-      const { positions, normals } = await sampleGLBGeometry(
-        url,
-        particleCount,
-      );
+      const data = await sampleGLBGeometry(url, particleCount);
+      const { positions, normals } = data;
       if (disposed) return;
 
       // Per-sphere random seeds (stay fixed through model swaps so particle
@@ -796,6 +822,12 @@ export default function ParticlesHologram({
         transitionProgress: uniform(0), // 0 = current model, 1 = target model
         transitionGlowScale: uniform(transitionGlowScale),
         entranceGlow: uniform(1), // fades 1→0 during entrance deform-in for smooth glow out
+        debugFlat: uniform(0),    // 1 = override color with flat muted tone
+        debugNormals: uniform(0), // 1 = override color with normal direction as RGB
+        debugLit: uniform(0),     // 1 = grayscale combined lighting (no color)
+        debugLight1: uniform(0),  // 1 = grayscale light1 contribution only
+        debugLight2: uniform(0),  // 1 = grayscale light2 contribution only
+        debugNoise: uniform(0),   // 1 = raw fractal noise field as grayscale
       };
       uniformsRef.current = u;
 
@@ -872,7 +904,8 @@ export default function ParticlesHologram({
           ),
         );
 
-      const noiseDisp = mx_fractal_noise_vec3(noiseCoord, 2, 2.0, u.noiseGain)
+      const rawNoise = mx_fractal_noise_vec3(noiseCoord, 2, 2.0, u.noiseGain);
+      const noiseDisp = rawNoise
         .mul(u.noiseAmp)
         .mul(mask);
 
@@ -948,6 +981,27 @@ export default function ParticlesHologram({
         return lightCol.mul(diffuse).mul(lightInt);
       };
 
+      // Scalar-only version (no color tint) — used for debug lighting modes
+      const lightDiffuseScalar = (lightPos: any, lightInt: any) => {
+        const dir = normalize(lightPos.sub(blendPos));
+        const figW = clamp(
+          dot(blendNorm, dir).add(u.wrap).div(float(1.0).add(u.wrap)),
+          float(0),
+          float(1),
+        );
+        const sphW = clamp(
+          dot(normalize(normalLocal), dir)
+            .add(u.wrap)
+            .div(float(1.0).add(u.wrap)),
+          float(0),
+          float(1),
+        );
+        return mix(figW, figW.mul(sphW), u.volumeStrength).mul(lightInt);
+      };
+
+      const d1 = lightDiffuseScalar(u.light1Pos, u.light1Intensity);
+      const d2 = lightDiffuseScalar(u.light2Pos, u.light2Intensity);
+
       const litColor = lightContrib(
         u.light1Pos,
         u.light1Color,
@@ -1010,9 +1064,30 @@ export default function ParticlesHologram({
         float(0),
         float(1),
       ).mul(u.entranceGlow);
-      material.colorNode = mix(shadedColor, u.mouseGlowColor, glowFactor);
+      const litWithGlow = mix(shadedColor, u.mouseGlowColor, glowFactor);
+
+      // ── Debug overlays (for breakdown / presentation) ─────────────────────
+      // Flat: muted blue-gray, no glow — shows particle density distribution
+      const flatDebugColor = vec3(0.72, 0.76, 0.82);
+      // Normals: remap blendNorm from -1..1 → 0..1 as RGB
+      const normDebugColor = blendNorm.mul(float(0.5)).add(vec3(0.5, 0.5, 0.5));
+      // Lighting debug: grayscale representation of diffuse contributions
+      const litDebugColor    = vec3(clamp(d1.add(d2).add(u.ambient), float(0), float(1)));
+      const light1DebugColor = vec3(clamp(d1, float(0), float(1)));
+      const light2DebugColor = vec3(clamp(d2, float(0), float(1)));
+
+      // Noise: remap fractal output -1..1 → 0..1 as grayscale
+      const noiseDebugColor = vec3(rawNoise.mul(float(0.5)).add(float(0.5)).length().mul(0.577));
+
+      const withFlat    = mix(litWithGlow, flatDebugColor, u.debugFlat);
+      const withNormals = mix(withFlat, normDebugColor, u.debugNormals);
+      const withLit     = mix(withNormals, litDebugColor, u.debugLit);
+      const withLight1  = mix(withLit, light1DebugColor, u.debugLight1);
+      const withLight2  = mix(withLight1, light2DebugColor, u.debugLight2);
+      material.colorNode = mix(withLight2, noiseDebugColor, u.debugNoise);
 
       instancedMesh.material = material;
+      instancedMeshRef.current = instancedMesh;
 
       // Two-group hierarchy:
       //   posGroup  — world position (modelX/Y/Z), no rotation
@@ -1025,6 +1100,28 @@ export default function ParticlesHologram({
       const rotGroup = new Group();
       rotGroup.add(instancedMesh);
       posGroup.add(rotGroup);
+
+      // ── Wireframe debug overlay ───────────────────────────────────────────
+      // Built from the world-space mesh data captured in sampleGLBGeometry.
+      // Added to rotGroup so it spins with the particles in wireframe mode.
+      {
+        const wfGroup = new Group();
+        wfGroup.visible = debugModeRef.current === "wireframe";
+        for (const { vertices, indices } of data.meshData) {
+          const srcGeo = new BufferGeometry();
+          srcGeo.setAttribute("position", new BufferAttribute(vertices, 3));
+          if (indices) srcGeo.setIndex(new BufferAttribute(indices, 1));
+          const edgesGeo = new EdgesGeometry(srcGeo, 15);
+          const wfMat = new LineBasicMaterial({
+            color: 0x88bbff,
+            transparent: true,
+            opacity: 0.45,
+          });
+          wfGroup.add(new LineSegments(edgesGeo, wfMat));
+        }
+        rotGroup.add(wfGroup);
+        wireframeGroupRef.current = wfGroup;
+      }
 
       // ── Transparent cylinder ──────────────────────────────────────────────
       // Open-ended cylinder enclosing the hologram; bottom sits at Y=0 (matching
@@ -1883,6 +1980,29 @@ export default function ParticlesHologram({
   useEffect(() => {
     entranceReformDurRef.current = entranceReformDur;
   }, [entranceReformDur]);
+  useEffect(() => {
+    debugModeRef.current = debugMode;
+    if (!uniformsRef.current) return;
+    const isDebug = debugMode !== "none";
+    uniformsRef.current.debugFlat.value    = debugMode === "flat"    ? 1 : 0;
+    uniformsRef.current.debugNormals.value = debugMode === "normals" ? 1 : 0;
+    uniformsRef.current.debugNoise.value   = debugMode === "noise"   ? 1 : 0;
+    uniformsRef.current.debugLit.value     = debugMode === "lit"     ? 1 : 0;
+    uniformsRef.current.debugLight1.value  = debugMode === "light1"  ? 1 : 0;
+    uniformsRef.current.debugLight2.value  = debugMode === "light2"  ? 1 : 0;
+    // Wireframe: show edge lines, hide particles
+    if (wireframeGroupRef.current)
+      wireframeGroupRef.current.visible = debugMode === "wireframe";
+    if (instancedMeshRef.current)
+      instancedMeshRef.current.visible = debugMode !== "wireframe";
+    // Hide scene elements in any debug mode; restore user values when exiting
+    if (cylMeshRef.current)
+      cylMeshRef.current.visible = isDebug ? false : cylVisible;
+    if (ringRotGroupRef.current)
+      ringRotGroupRef.current.visible = isDebug ? false : ringVisible;
+    if (gridMeshRef.current)
+      gridMeshRef.current.visible = isDebug ? false : gridVisible;
+  }, [debugMode, cylVisible, ringVisible, gridVisible]);
 
   // ── Replay entrance animation ─────────────────────────────────────────────
   const isFirstReplayRef = useRef(true);

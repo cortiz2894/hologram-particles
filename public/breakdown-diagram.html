@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Architecture Diagram</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #0b0d11;
+        --panel: #13161c;
+        --surface: #1a1e26;
+        --border: #252930;
+        --border-light: #353a44;
+        --text: #e8edf5;
+        --text-muted: #4a5060;
+        --text-dim: #7a8090;
+        --accent: #ffffff;
+        --accent-glow: rgba(255, 255, 255, 0.7);
+        --accent-soft: rgba(255, 255, 255, 0.12);
+        --mono: "IBM Plex Mono", monospace;
+        --sans: "Space Grotesk", sans-serif;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+
+      .diagram {
+        width: 680px;
+        padding: 56px 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        opacity: 0;
+      }
+
+      /* ── Row ─────────────────────────────────────────────────── */
+      .row {
+        display: flex;
+        align-items: flex-start;
+        width: 100%;
+        gap: 20px;
+        opacity: 0;
+        transform: translateY(14px);
+      }
+
+      /* ── Layer label ─────────────────────────────────────────── */
+      .layer-label {
+        width: 88px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        padding-top: 16px;
+        gap: 3px;
+      }
+
+      .layer-num {
+        font-family: var(--mono);
+        font-size: 8px;
+        font-weight: 400;
+        letter-spacing: 0.22em;
+        color: var(--text-muted);
+        white-space: nowrap;
+      }
+
+      .layer-title {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.25em;
+        color: var(--accent);
+        text-transform: uppercase;
+        text-shadow:
+          0 0 10px var(--accent-glow),
+          0 0 30px rgba(255, 255, 255, 0.3),
+          0 0 60px rgba(255, 255, 255, 0.1);
+        white-space: nowrap;
+      }
+
+      /* ── Node card ───────────────────────────────────────────── */
+      .card {
+        flex: 1;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        background: var(--panel);
+        padding: 16px 20px;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.03),
+          0 0 24px rgba(255, 255, 255, 0.03),
+          inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .card-header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .card-icon {
+        width: 44px;
+        height: 44px;
+        flex-shrink: 0;
+        border: 1px solid var(--border-light);
+        border-radius: 3px;
+        background: var(--surface);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .card-icon svg {
+        color: var(--text);
+        opacity: 0.8;
+      }
+
+      .card-title {
+        font-family: var(--mono);
+        font-size: 17px;
+        font-weight: 500;
+        letter-spacing: 0.03em;
+        color: var(--accent);
+        text-shadow:
+          0 0 14px var(--accent-glow),
+          0 0 36px rgba(255, 255, 255, 0.2);
+        line-height: 1.2;
+      }
+
+      .card-sub {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 300;
+        letter-spacing: 0.1em;
+        color: var(--text-dim);
+        margin-top: 3px;
+      }
+
+      /* ── Slash prefix decoration ─────────────────────────────── */
+      .slash {
+        color: var(--text-muted);
+        margin-right: 4px;
+        font-weight: 300;
+      }
+
+      /* ── Sub-chips row ───────────────────────────────────────── */
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: 0.1em;
+        color: var(--text);
+        border: 1px solid var(--border-light);
+        border-radius: 2px;
+        background: var(--surface);
+        padding: 6px 12px;
+        opacity: 0;
+        transform: translateY(6px);
+        box-shadow: 0 0 12px rgba(255, 255, 255, 0.03);
+      }
+
+      .chip-note {
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 300;
+        letter-spacing: 0.12em;
+        color: var(--text-muted);
+        padding-top: 2px;
+      }
+
+      /* ── Arrow connector ─────────────────────────────────────── */
+      .connector {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        /* align with card: label-width (88) + gap (20) + half card = center of card */
+        padding-left: 108px;
+        opacity: 0;
+      }
+
+      .connector-line {
+        width: 1px;
+        height: 22px;
+        background: linear-gradient(
+          to bottom,
+          var(--border-light),
+          rgba(255, 255, 255, 0.25)
+        );
+      }
+
+      .connector-label {
+        font-family: var(--mono);
+        font-size: 8px;
+        font-weight: 300;
+        letter-spacing: 0.2em;
+        color: var(--text-muted);
+        margin: 5px 0;
+      }
+
+      .connector-arrow {
+        width: 0;
+        margin-bottom: 15px;
+        height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 7px solid rgba(255, 255, 255, 0.35);
+        filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.5));
+      }
+
+      .connector-line-bot {
+        width: 1px;
+        height: 12px;
+        background: linear-gradient(
+          to bottom,
+          rgba(255, 255, 255, 0.18),
+          transparent
+        );
+      }
+
+      /* Divider between card header and chips */
+      .divider {
+        width: 100%;
+        height: 1px;
+        background: var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="diagram" id="diagram">
+      <!-- ── ROW 1: INPUT ──────────────────────────────────────── -->
+      <div class="row" id="row-1">
+        <div class="layer-label">
+          <span class="layer-num">// LAYER 1</span>
+          <span class="layer-title">INPUT</span>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="9" y1="13" x2="15" y2="13" />
+                <line x1="9" y1="17" x2="13" y2="17" />
+              </svg>
+            </div>
+            <div>
+              <div class="card-title">
+                <span class="slash">//</span> GLB File &mdash; 3D Model
+              </div>
+              <div class="card-sub">
+                source geometry &middot; meshes &middot; surface normals
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- connector 1 -->
+      <div class="connector" id="conn-1">
+        <div class="connector-line"></div>
+        <div class="connector-label">sample surface geometry</div>
+        <div class="connector-arrow"></div>
+      </div>
+
+      <!-- ── ROW 2: POINTS ─────────────────────────────────────── -->
+      <div class="row" id="row-2">
+        <div class="layer-label"></div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <circle cx="4" cy="5" r="1.5" opacity="0.9" />
+                <circle cx="11" cy="3" r="1.5" opacity="0.9" />
+                <circle cx="18" cy="6" r="1.5" opacity="0.9" />
+                <circle cx="3" cy="12" r="1.5" opacity="0.7" />
+                <circle cx="10" cy="10" r="1.5" opacity="0.7" />
+                <circle cx="17" cy="11" r="1.5" opacity="0.7" />
+                <circle cx="6" cy="18" r="1.5" opacity="0.5" />
+                <circle cx="14" cy="17" r="1.5" opacity="0.5" />
+                <circle cx="20" cy="15" r="1.5" opacity="0.5" />
+              </svg>
+            </div>
+            <div>
+              <div class="card-title">
+                <span class="slash">//</span> 60,000 Points
+              </div>
+              <div class="card-sub">
+                position + normal per particle &middot; InstancedBufferAttribute
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- connector 2 -->
+      <div class="connector" id="conn-2">
+        <div class="connector-line"></div>
+        <div class="connector-arrow"></div>
+      </div>
+
+      <!-- ── ROW 3: RENDER ─────────────────────────────────────── -->
+      <div class="row" id="row-3">
+        <div class="layer-label">
+          <span class="layer-num">// LAYER 2</span>
+          <span class="layer-title">RENDER</span>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
+                />
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                <line x1="12" y1="22.08" x2="12" y2="12" />
+              </svg>
+            </div>
+            <div>
+              <div class="card-title">
+                <span class="slash">//</span> InstancedMesh
+              </div>
+              <div class="card-sub">
+                1 sphere geometry &times; 60k instances &middot; WebGPU
+              </div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="chips" id="chips-render">
+            <div class="chip" id="chip-1">Wrapped Diffuse Lighting</div>
+            <div class="chip" id="chip-2">Fractal Noise Displacement</div>
+            <div class="chip" id="chip-3">Mouse Glow + Transitions</div>
+          </div>
+          <div class="chip-note">
+            // TSL Node Shader — GPU logic written in JavaScript
+          </div>
+        </div>
+      </div>
+
+      <!-- connector 3 -->
+      <div class="connector" id="conn-3">
+        <div class="connector-line"></div>
+        <div class="connector-arrow"></div>
+      </div>
+
+      <!-- ── ROW 4: OUTPUT ─────────────────────────────────────── -->
+      <div class="row" id="row-4">
+        <div class="layer-label">
+          <span class="layer-num">// LAYER 3</span>
+          <span class="layer-title">OUTPUT</span>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polygon
+                  points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
+                />
+              </svg>
+            </div>
+            <div>
+              <div class="card-title">
+                <span class="slash">//</span> PostProcessing Pipeline
+              </div>
+              <div class="card-sub">Three.js WebGPU post-pass</div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="chips" id="chips-post">
+            <div class="chip" id="chip-4">Bloom</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ delay: 0.4 });
+
+      tl.to("#diagram", { opacity: 1, duration: 0.01 })
+
+        .to("#row-1", {
+          opacity: 1,
+          y: 0,
+          duration: 0.6,
+          ease: "power3.out",
+        })
+
+        .to(
+          "#conn-1",
+          {
+            opacity: 1,
+            duration: 0.45,
+            ease: "power2.out",
+          },
+          "+=0.08",
+        )
+
+        .to(
+          "#row-2",
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.6,
+            ease: "power3.out",
+          },
+          "-=0.1",
+        )
+
+        .to(
+          "#conn-2",
+          {
+            opacity: 1,
+            duration: 0.4,
+            ease: "power2.out",
+          },
+          "+=0.08",
+        )
+
+        .to(
+          "#row-3",
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.6,
+            ease: "power3.out",
+          },
+          "-=0.1",
+        )
+
+        .to(
+          ["#chip-1", "#chip-2", "#chip-3"],
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.4,
+            stagger: 0.1,
+            ease: "power2.out",
+          },
+          "-=0.15",
+        )
+
+        .to(
+          "#conn-3",
+          {
+            opacity: 1,
+            duration: 0.4,
+            ease: "power2.out",
+          },
+          "+=0.06",
+        )
+
+        .to(
+          "#row-4",
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.6,
+            ease: "power3.out",
+          },
+          "-=0.1",
+        )
+
+        .to(
+          "#chip-4",
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.4,
+            ease: "power2.out",
+          },
+          "-=0.15",
+        );
+
+      // Subtle border glow pulse after everything lands
+      gsap.to(".card", {
+        boxShadow:
+          "0 0 0 1px rgba(255,255,255,0.07), 0 0 28px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.06)",
+        duration: 2.5,
+        repeat: -1,
+        yoyo: true,
+        ease: "sine.inOut",
+        delay: 3.2,
+        stagger: 0.5,
+      });
+    </script>
+  </body>
+</html>

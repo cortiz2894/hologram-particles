@@ -4,6 +4,8 @@ import { useRef } from "react";
 import { COLORS } from "@/components/shared/theme";
 import styles from "./OverlayButtons.module.css";
 
+export type DebugMode = "none" | "wireframe" | "flat" | "normals" | "noise" | "lit" | "light1" | "light2";
+
 interface OverlayButtonsProps {
   showGrid: boolean;
   onToggleGrid: () => void;
@@ -12,6 +14,8 @@ interface OverlayButtonsProps {
   hasGlb: boolean;
   onLoadGlb: (file: File) => void;
   onClearGlb: () => void;
+  debugMode: DebugMode;
+  onDebugMode: (mode: DebugMode) => void;
 }
 
 export default function OverlayButtons({
@@ -22,6 +26,8 @@ export default function OverlayButtons({
   hasGlb,
   onLoadGlb,
   onClearGlb,
+  debugMode,
+  onDebugMode,
 }: OverlayButtonsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -30,6 +36,9 @@ export default function OverlayButtons({
     if (file) onLoadGlb(file);
     e.target.value = "";
   };
+
+  const toggleDebug = (mode: DebugMode) =>
+    onDebugMode(debugMode === mode ? "none" : mode);
 
   return (
     <div
@@ -44,6 +53,71 @@ export default function OverlayButtons({
         } as React.CSSProperties
       }
     >
+      {/* Geometry debug group */}
+      <div className={styles.debugGroup}>
+        <span className={styles.debugLabel}>GEO</span>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "wireframe" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("wireframe")}
+          title="Wireframe overlay"
+        >
+          WF
+        </button>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "flat" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("flat")}
+          title="Flat shading — shows particle density"
+        >
+          FLAT
+        </button>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "normals" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("normals")}
+          title="Normals as RGB color"
+        >
+          NRM
+        </button>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "noise" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("noise")}
+          title="Raw fractal noise field as grayscale"
+        >
+          NOI
+        </button>
+      </div>
+
+      {/* Separator */}
+      <div className={styles.separator} />
+
+      {/* Lighting debug group */}
+      <div className={styles.debugGroup}>
+        <span className={styles.debugLabel}>LIGHT</span>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "lit" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("lit")}
+          title="Combined lighting — grayscale diffuse + ambient"
+        >
+          LIT
+        </button>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "light1" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("light1")}
+          title="Light 1 contribution only — grayscale"
+        >
+          L1
+        </button>
+        <button
+          className={`${styles.btn} ${styles.debugBtn} ${debugMode === "light2" ? styles.debugActive : ""}`}
+          onClick={() => toggleDebug("light2")}
+          title="Light 2 contribution only — grayscale"
+        >
+          L2
+        </button>
+      </div>
+
+      {/* Separator */}
+      <div className={styles.separator} />
+
       {/* Toggle Leva Controls */}
       <button
         onClick={onToggleLeva}
