@@ -11,7 +11,12 @@
       "Bash(npx next build:*)",
       "Bash(npm run build:*)",
       "Bash(pnpm dev:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(mkdir -p components/Footer)",
+      "Bash(mkdir -p components/ModelSelector)",
+      "Bash(mkdir -p components/OverlayButtons)",
+      "Bash(mkdir -p components/OverlayHeader)",
+      "Bash(mkdir -p components/UIOverlay)"
     ]
   }
 }

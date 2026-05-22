@@ -1,6 +1,6 @@
 "use client";
 
-import OverlayHeader from "./OverlayHeader";
+import OverlayHeader from "../OverlayHeader/OverlayHeader";
 
 export default function UIOverlay() {
   return (

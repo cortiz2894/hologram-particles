@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { bebasNeue, barlowCondensed, ibmPlexMono } from "@/components/shared/fonts";
 import "./globals.css";
-import Footer from "@/components/overlay/Footer";
+import Footer from "@/components/overlay/components/Footer/Footer";
 
 
 export const metadata: Metadata = {

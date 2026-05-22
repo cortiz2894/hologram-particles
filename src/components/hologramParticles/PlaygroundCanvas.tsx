@@ -4,9 +4,9 @@ import { useState, useCallback, useRef } from "react";
 import { Leva } from "leva";
 import { LEVA_THEME } from "@/components/shared/theme";
 import HologramScene from "./HologramScene";
-import OverlayButtons from "@/components/overlay/OverlayButtons";
-import ModelSelector, { ModelOption } from "@/components/overlay/ModelSelector";
-import OverlayHeader from "@/components/overlay/OverlayHeader";
+import OverlayButtons from "@/components/overlay/components/OverlayButtons/OverlayButtons";
+import ModelSelector, { ModelOption } from "@/components/overlay/components/ModelSelector/ModelSelector";
+import OverlayHeader from "@/components/overlay/components/OverlayHeader/OverlayHeader";
 import { useHologramControls } from "./utils/useHologramControls";
 import { PRESETS, type PresetId } from "./utils/presets";
 
