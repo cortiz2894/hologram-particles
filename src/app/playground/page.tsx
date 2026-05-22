@@ -1,4 +1,4 @@
-import PlaygroundCanvas from "@/components/playground/PlaygroundCanvas";
+import PlaygroundCanvas from "@/components/hologramParticles/PlaygroundCanvas";
 
 export default function PlaygroundPage() {
   return <PlaygroundCanvas />;
