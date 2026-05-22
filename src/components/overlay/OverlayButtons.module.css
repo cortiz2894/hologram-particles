@@ -60,3 +60,27 @@
 .fileInput {
   display: none;
 }
+
+/* ── Separator ───────────────────────────────────────────────────────────── */
+
+.separator {
+  width: 1px;
+  height: 20px;
+  background: var(--overlay-border);
+  opacity: 0.5;
+  align-self: center;
+}
+
+/* ── Preset toggle ───────────────────────────────────────────────────────── */
+
+.presetBtn {
+  composes: btn;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+.presetLabel {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  line-height: 1;
+}

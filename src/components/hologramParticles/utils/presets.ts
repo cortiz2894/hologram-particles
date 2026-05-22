@@ -1,0 +1,48 @@
+import type { PresetId, HologramPreset } from "../types";
+
+export type { PresetId, HologramPreset };
+
+export const PRESETS: Record<PresetId, HologramPreset> = {
+  light: {
+    color: "#99a5b7",
+    ambient: 0.2,
+    wrap: 0.35,
+    volumeStrength: 0.67,
+    mouseGlowColor: "#ffada7",
+    light1Color: "#ffffff",
+    light1Intensity: 1.5,
+    light2Color: "#f2e0e0",
+    light2Intensity: 1.1,
+    cylColor: "#ffffff",
+    gridColor: "#c8d4de",
+    gridBaseOpacity: 0.31,
+    ringColor: "#ffffff",
+    ringThickness: 0.03,
+    ringBrightness: 3.0,
+    ringOpacity: 0.9,
+    bgColorCenter: "#495155",
+    bgColorMid: "#495258",
+    bgColorEdge: "#305269",
+  },
+  dark: {
+    color: "#d1e3ff",
+    ambient: 0.08,
+    wrap: 0.31,
+    volumeStrength: 0.98,
+    mouseGlowColor: "#ffffff",
+    light1Color: "#8bb4d5",
+    light1Intensity: 1.75,
+    light2Color: "#8bb4d5",
+    light2Intensity: 1.35,
+    cylColor: "#99c4f0",
+    gridColor: "#c8d4de",
+    gridBaseOpacity: 0.06,
+    ringColor: "#809fde",
+    ringThickness: 0.035,
+    ringBrightness: 4.8,
+    ringOpacity: 0.47,
+    bgColorCenter: "#010407",
+    bgColorMid: "#010408",
+    bgColorEdge: "#000000",
+  },
+};

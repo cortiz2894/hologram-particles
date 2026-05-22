@@ -10,7 +10,8 @@
       "Bash(pnpm list:*)",
       "Bash(npx next build:*)",
       "Bash(npm run build:*)",
-      "Bash(pnpm dev:*)"
+      "Bash(pnpm dev:*)",
+      "Read(//tmp/**)"
     ]
   }
 }

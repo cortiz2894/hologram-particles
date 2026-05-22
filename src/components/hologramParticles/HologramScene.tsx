@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import type { ParticlesHologramProps } from "./ParticlesHologram";
+import type { ParticlesHologramProps } from "./types";
 
 const ParticlesHologram = dynamic(
   () => import("./ParticlesHologram"),
