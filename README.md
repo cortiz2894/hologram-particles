@@ -30,7 +30,7 @@ Key highlights:
 
 - **TSL Node Shaders** — all GPU logic written in JavaScript, no GLSL files
 - **WebGPU native** — runs on Three.js r182 WebGPU renderer
-- **Any GLB** — load your own model via drag & drop, particles adapt automatically
+- **Any GLB** — load your own model via the upload button, particles adapt automatically
 - **Live model morphing** — smooth three-phase transition between GLB models
 - **Fully parametric** — every visual property exposed via real-time GUI
 - **Zero external shader libraries** — everything is hand-written in TSL
@@ -69,24 +69,6 @@ Key highlights:
 
 ### Post-processing
 - **Bloom** — WebGPU native bloom node, luminance-threshold with tunable strength and radius
-
----
-
-## 🔍 Debug Modes
-
-Built-in debug visualizations for breakdown and presentation:
-
-| Button | Mode | Shows |
-|--------|------|-------|
-| `WF` | Wireframe | Edge geometry of the loaded GLB |
-| `FLAT` | Flat | Raw particle density, no lighting |
-| `NRM` | Normals | Surface normals as RGB color |
-| `NOI` | Noise | Raw fractal noise field as grayscale |
-| `LIT` | Lit | Combined grayscale diffuse + ambient |
-| `L1` | Light 1 | Light 1 contribution only |
-| `L2` | Light 2 | Light 2 contribution only |
-
-All debug modes hide scene decorations (cylinder, rings, grid, header) for clean capture.
 
 ---
 
@@ -133,10 +115,10 @@ A built-in development environment for exploring the effect in context.
 
 ```bash
 # Clone the repository
-git clone https://github.com/cortiz2894/creative-boilerplate.git
+git clone https://github.com/cortiz2894/hologram-particles.git
 
 # Navigate to the project
-cd creative-boilerplate
+cd hologram-particles
 
 # Install dependencies
 pnpm install
