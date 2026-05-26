@@ -252,7 +252,6 @@ export default function ParticlesHologram({
   const springKRef = useRef(springStiffness);
   const springDampingRef = useRef(springDamping);
   const pushStrengthRef = useRef(pushStrength);
-  const mouseScatterRef = useRef(mouseScatter);
   const mouseGlowDecayRef = useRef(mouseGlowDecay);
   const mouseLerpRef = useRef(mouseLerp);
   const bloomNodeRef = useRef<any>(null);

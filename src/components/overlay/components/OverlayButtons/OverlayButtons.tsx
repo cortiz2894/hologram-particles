@@ -6,8 +6,6 @@ import styles from "./OverlayButtons.module.css";
 import type { PresetId } from "@/components/hologramParticles/utils/presets";
 
 interface OverlayButtonsProps {
-  showGrid: boolean;
-  onToggleGrid: () => void;
   hideLeva: boolean;
   onToggleLeva: () => void;
   hasGlb: boolean;
@@ -18,8 +16,6 @@ interface OverlayButtonsProps {
 }
 
 export default function OverlayButtons({
-  showGrid,
-  onToggleGrid,
   hideLeva,
   onToggleLeva,
   hasGlb,
@@ -78,6 +74,59 @@ export default function OverlayButtons({
           {activePreset === "light" ? "LIGHT" : "DARK"}
         </span>
       </button>
+
+      {/* Separator */}
+      <div className={styles.separator} />
+
+      {/* Load / Clear GLB */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".glb"
+        className={styles.fileInput}
+        onChange={handleFileChange}
+      />
+      {hasGlb ? (
+        <button
+          className={styles.btn}
+          onClick={onClearGlb}
+          title="Remove custom model"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+          >
+            <line x1="2" y1="2" x2="12" y2="12" />
+            <line x1="12" y1="2" x2="2" y2="12" />
+          </svg>
+        </button>
+      ) : (
+        <button
+          className={styles.importBtn}
+          onClick={() => fileInputRef.current?.click()}
+          title="Load your own GLB model"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M7 9V2M4 5l3-3 3 3" />
+            <path d="M2 11h10" />
+          </svg>
+          <span className={styles.importLabel}>LOAD GLB</span>
+        </button>
+      )}
 
       {/* Separator */}
       <div className={styles.separator} />
