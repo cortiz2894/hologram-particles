@@ -941,11 +941,12 @@ export default function ParticlesHologram({
       let mouseEverMoved = false;
       const smoothstep = (p: number) => p * p * (3 - 2 * p);
 
-      const onMouseMove = (e: MouseEvent) => {
+      // ── Shared pointer update (mouse & touch) ────────────────────────────────
+      const updatePointerFromCoords = (clientX: number, clientY: number) => {
         const rect = container.getBoundingClientRect();
         mouseNDC.set(
-          ((e.clientX - rect.left) / rect.width) * 2 - 1,
-          -((e.clientY - rect.top) / rect.height) * 2 + 1,
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1,
         );
         raycaster.setFromCamera(mouseNDC, camera);
         if (raycaster.ray.intersectPlane(mousePlane, mouseHit)) {
@@ -964,12 +965,29 @@ export default function ParticlesHologram({
         moveTimer = 0;
       };
 
-      const onMouseLeave = () => {
-        mouseMoving = false;
+      // ── Mouse events ──────────────────────────────────────────────────────────
+      const onMouseMove = (e: MouseEvent) => {
+        updatePointerFromCoords(e.clientX, e.clientY);
       };
+      const onMouseLeave = () => { mouseMoving = false; };
+
+      // ── Touch events ──────────────────────────────────────────────────────────
+      const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length > 0)
+          updatePointerFromCoords(e.touches[0].clientX, e.touches[0].clientY);
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        e.preventDefault();
+        if (e.touches.length > 0)
+          updatePointerFromCoords(e.touches[0].clientX, e.touches[0].clientY);
+      };
+      const onTouchEnd = () => { mouseMoving = false; };
 
       container.addEventListener("mousemove", onMouseMove);
       container.addEventListener("mouseleave", onMouseLeave);
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: false });
+      container.addEventListener("touchend", onTouchEnd);
 
       const animate = () => {
         if (disposed) return;
@@ -1143,6 +1161,9 @@ export default function ParticlesHologram({
         window.removeEventListener("resize", onResize);
         container.removeEventListener("mousemove", onMouseMove);
         container.removeEventListener("mouseleave", onMouseLeave);
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd);
         sphereGeo.dispose();
         material.dispose();
         cylGeo.dispose();
