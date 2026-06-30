@@ -26,7 +26,13 @@ export function useHologramControls(onReplay: () => void) {
         color: { value: "#99a5b7", label: "Color" },
         ambient: { value: 0.2, min: 0, max: 1, step: 0.01, label: "Ambient" },
         wrap: { value: 0.35, min: 0, max: 1, step: 0.01, label: "Wrap" },
-        volumeStrength: { value: 0.67, min: 0, max: 1, step: 0.01, label: "Volume Strength" },
+        volumeStrength: {
+          value: 0.67,
+          min: 0,
+          max: 1,
+          step: 0.01,
+          label: "Volume Strength",
+        },
         sphereSize: {
           value: 0.014,
           min: 0.003,
@@ -128,6 +134,61 @@ export function useHologramControls(onReplay: () => void) {
       },
       { collapsed: false },
     ),
+    "Pusher Physics": folder(
+      {
+        pusherVisible: { value: false, label: "Show Collider" },
+        pusherRadius: {
+          value: 0.5,
+          min: 0.05,
+          max: 3,
+          step: 0.05,
+          label: "Collider Size",
+        },
+        pusherFollow: {
+          value: 16,
+          min: 1,
+          max: 40,
+          step: 0.5,
+          label: "Follow Speed",
+        },
+        pusherRadialStrength: {
+          value: 134,
+          min: 0,
+          max: 200,
+          step: 1,
+          label: "Push Out Force",
+        },
+        pusherMoveStrength: {
+          value: 34,
+          min: 0,
+          max: 100,
+          step: 1,
+          label: "Drag Force",
+        },
+        pusherSpring: {
+          value: 49.5,
+          min: 0.5,
+          max: 80,
+          step: 0.5,
+          label: "Return Speed",
+        },
+        pusherDamping: {
+          value: 14.5,
+          min: 0.1,
+          max: 40,
+          step: 0.1,
+          label: "Return Smoothness",
+        },
+        pusherMaxOffset: {
+          value: 4.1,
+          min: 0.1,
+          max: 6,
+          step: 0.1,
+          label: "Max Displacement",
+        },
+      },
+      { collapsed: false },
+    ),
     PostFX: folder(
       {
         bloomStrength: {
@@ -167,7 +228,13 @@ export function useHologramControls(onReplay: () => void) {
         light1Y: { value: 5, min: -10, max: 10, step: 0.1, label: "Y" },
         light1Z: { value: 2, min: -10, max: 10, step: 0.1, label: "Z" },
         light1Color: { value: "#ffffff", label: "Color" },
-        light1Intensity: { value: 1.5, min: 0, max: 5, step: 0.05, label: "Intensity" },
+        light1Intensity: {
+          value: 1.5,
+          min: 0,
+          max: 5,
+          step: 0.05,
+          label: "Intensity",
+        },
       },
       { collapsed: false },
     ),
@@ -177,7 +244,13 @@ export function useHologramControls(onReplay: () => void) {
         light2Y: { value: -5, min: -10, max: 10, step: 0.1, label: "Y" },
         light2Z: { value: -2, min: -10, max: 10, step: 0.1, label: "Z" },
         light2Color: { value: "#f2e0e0", label: "Color" },
-        light2Intensity: { value: 1.1, min: 0, max: 5, step: 0.05, label: "Intensity" },
+        light2Intensity: {
+          value: 1.1,
+          min: 0,
+          max: 5,
+          step: 0.05,
+          label: "Intensity",
+        },
       },
       { collapsed: false },
     ),
@@ -423,7 +496,13 @@ export function useHologramControls(onReplay: () => void) {
       {
         gridVisible: { value: true, label: "Visible" },
         gridColor: { value: "#c8d4de", label: "Color" },
-        gridBaseOpacity: { value: 0.31, min: 0, max: 1, step: 0.01, label: "Base Opacity" },
+        gridBaseOpacity: {
+          value: 0.31,
+          min: 0,
+          max: 1,
+          step: 0.01,
+          label: "Base Opacity",
+        },
         gridWaveAmp: {
           value: 0.73,
           min: 0,
@@ -466,9 +545,27 @@ export function useHologramControls(onReplay: () => void) {
       {
         ringVisible: { value: true, label: "Visible" },
         ringColor: { value: "#ffffff", label: "Color" },
-        ringThickness: { value: 0.03, min: 0.001, max: 0.2, step: 0.001, label: "Thickness" },
-        ringBrightness: { value: 3.0, min: 0, max: 10, step: 0.1, label: "Brightness" },
-        ringOpacity: { value: 0.9, min: 0, max: 1, step: 0.01, label: "Opacity" },
+        ringThickness: {
+          value: 0.03,
+          min: 0.001,
+          max: 0.2,
+          step: 0.001,
+          label: "Thickness",
+        },
+        ringBrightness: {
+          value: 3.0,
+          min: 0,
+          max: 10,
+          step: 0.1,
+          label: "Brightness",
+        },
+        ringOpacity: {
+          value: 0.9,
+          min: 0,
+          max: 1,
+          step: 0.01,
+          label: "Opacity",
+        },
         ringRadius: {
           value: 1.95,
           min: 0.1,

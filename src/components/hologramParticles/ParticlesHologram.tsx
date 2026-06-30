@@ -31,6 +31,7 @@ import {
   WebGPURenderer,
   MeshBasicNodeMaterial,
   PostProcessing,
+  StorageInstancedBufferAttribute,
 } from "three/webgpu";
 import {
   positionLocal,
@@ -49,6 +50,8 @@ import {
   normalize,
   dot,
   clamp,
+  min,
+  max,
   mix,
   pow,
   abs,
@@ -56,6 +59,9 @@ import {
   texture as tslTexture,
   uv,
   pass,
+  storage,
+  instanceIndex,
+  Fn,
   mx_noise_float,
   mx_fractal_noise_vec3,
 } from "three/tsl";
@@ -187,6 +193,14 @@ export default function ParticlesHologram({
   springDamping = 3.0,
   pushStrength = 12.0,
   mouseScatter = 0.6,
+  pusherVisible = true,
+  pusherRadius = 0.6,
+  pusherFollow = 16,
+  pusherRadialStrength = 45,
+  pusherMoveStrength = 14,
+  pusherSpring = 18,
+  pusherDamping = 5,
+  pusherMaxOffset = 2,
   mouseGlowColor = "#ffffff",
   mouseGlowPassive = 0.0,
   mouseGlowActive = 1.5,
@@ -249,10 +263,15 @@ export default function ParticlesHologram({
   const groupRef = useRef<Group | null>(null);
   const autoRotateSpeedRef = useRef(autoRotateSpeed);
   const uniformsRef = useRef<Record<string, any> | null>(null);
+  const restPosBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
+  const physOffBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
+  const physVelBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
+  const pusherMeshRef = useRef<Mesh | null>(null);
+  const pusherFollowRef = useRef(pusherFollow);
+  const pusherVisibleRef = useRef(pusherVisible);
   const springKRef = useRef(springStiffness);
   const springDampingRef = useRef(springDamping);
   const pushStrengthRef = useRef(pushStrength);
-  const mouseScatterRef = useRef(mouseScatter);
   const mouseGlowDecayRef = useRef(mouseGlowDecay);
   const mouseLerpRef = useRef(mouseLerp);
   const bloomNodeRef = useRef<any>(null);
@@ -326,26 +345,28 @@ export default function ParticlesHologram({
   const isFirstUrlRef = useRef(true);
 
   // ── Ref sync — runs every render, read by the animate loop ───────────────────
-  autoRotateSpeedRef.current     = autoRotateSpeed;
-  springKRef.current             = springStiffness;
-  springDampingRef.current       = springDamping;
-  pushStrengthRef.current        = pushStrength;
-  mouseGlowDecayRef.current      = mouseGlowDecay;
-  mouseLerpRef.current           = mouseLerp;
-  camIntensityRef.current        = camIntensity;
-  camStiffnessRef.current        = camStiffness;
-  camDampingRef.current          = camDamping;
-  maskContrastRef.current        = maskContrast;
+  autoRotateSpeedRef.current = autoRotateSpeed;
+  pusherFollowRef.current = pusherFollow;
+  pusherVisibleRef.current = pusherVisible;
+  springKRef.current = springStiffness;
+  springDampingRef.current = springDamping;
+  pushStrengthRef.current = pushStrength;
+  mouseGlowDecayRef.current = mouseGlowDecay;
+  mouseLerpRef.current = mouseLerp;
+  camIntensityRef.current = camIntensity;
+  camStiffnessRef.current = camStiffness;
+  camDampingRef.current = camDamping;
+  maskContrastRef.current = maskContrast;
   transitionDeformDurRef.current = transitionDeformDur;
-  transitionMorphDurRef.current  = transitionMorphDur;
+  transitionMorphDurRef.current = transitionMorphDur;
   transitionReformDurRef.current = transitionReformDur;
   transitionMaskContrastRef.current = transitionMaskContrast;
   transitionGlowScaleRef.current = transitionGlowScale;
-  entranceMorphDurRef.current    = entranceMorphDur;
-  entranceReformDurRef.current   = entranceReformDur;
-  bgColorCenterRef.current       = bgColorCenter;
-  bgColorMidRef.current          = bgColorMid;
-  bgColorEdgeRef.current         = bgColorEdge;
+  entranceMorphDurRef.current = entranceMorphDur;
+  entranceReformDurRef.current = entranceReformDur;
+  bgColorCenterRef.current = bgColorCenter;
+  bgColorMidRef.current = bgColorMid;
+  bgColorEdgeRef.current = bgColorEdge;
 
   // ── Full re-init on url / particleCount change ────────────────────────────────
   useEffect(() => {
@@ -453,15 +474,11 @@ export default function ParticlesHologram({
       );
       if (disposed) return;
 
-      const seeds = new Float32Array(particleCount);
-      for (let i = 0; i < particleCount; i++) seeds[i] = Math.random();
-
       // ── Sphere geometry ───────────────────────────────────────────────────────
+      // NOTE: the per-particle float phase is derived from the rest position
+      // (hash) instead of a dedicated `instanceSeed` attribute — this frees a
+      // vertex-buffer slot for the physics offset (WebGPU caps at 8).
       const sphereGeo = new IcosahedronGeometry(1, 0);
-      sphereGeo.setAttribute(
-        "instanceSeed",
-        new InstancedBufferAttribute(seeds, 1),
-      );
       sphereGeo.setAttribute(
         "instanceNormal",
         new InstancedBufferAttribute(new Float32Array(normals.length), 3),
@@ -528,6 +545,17 @@ export default function ParticlesHologram({
         mouseRadius: uniform(mouseRadius),
         mouseStrength: uniform(mouseStrength),
         mouseScatter: uniform(mouseScatter),
+        // ── Pusher physics (GPU compute, collider sphere) ───────────────────
+        physDt: uniform(0),
+        pusherPos: uniform(new Vector3()),
+        pusherVel: uniform(new Vector3()),
+        pusherActive: uniform(0),
+        pusherRadius: uniform(pusherRadius),
+        pusherRadial: uniform(pusherRadialStrength),
+        pusherMove: uniform(pusherMoveStrength),
+        pusherSpring: uniform(pusherSpring),
+        pusherDamping: uniform(pusherDamping),
+        pusherMaxOffset: uniform(pusherMaxOffset),
         mouseGlowColor: uniform(new Color(mouseGlowColor)),
         mouseGlowPassive: uniform(mouseGlowPassive),
         mouseGlowActive: uniform(mouseGlowActive),
@@ -539,10 +567,86 @@ export default function ParticlesHologram({
       };
       uniformsRef.current = u;
 
+      // ── Per-particle physics state (GPU compute) ──────────────────────────────
+      // restPos: each particle's rest (target) position — the spring pulls back to it.
+      // physOff: live displacement from rest. physVel: live velocity.
+      // physRand: a fixed per-particle unit vector used for directional scatter.
+      const restPosBuf = new StorageInstancedBufferAttribute(
+        positions.slice(),
+        3,
+      );
+      const physOffBuf = new StorageInstancedBufferAttribute(particleCount, 3);
+      const physVelBuf = new StorageInstancedBufferAttribute(particleCount, 3);
+      const physRandArr = new Float32Array(particleCount * 3);
+      for (let i = 0; i < particleCount; i++) {
+        let x = Math.random() * 2 - 1;
+        let y = Math.random() * 2 - 1;
+        let z = Math.random() * 2 - 1;
+        const len = Math.hypot(x, y, z) || 1;
+        x /= len;
+        y /= len;
+        z /= len;
+        physRandArr[i * 3] = x;
+        physRandArr[i * 3 + 1] = y;
+        physRandArr[i * 3 + 2] = z;
+      }
+      const physRandBuf = new StorageInstancedBufferAttribute(physRandArr, 3);
+
+      restPosBufRef.current = restPosBuf;
+      physOffBufRef.current = physOffBuf;
+      physVelBufRef.current = physVelBuf;
+
+      const restPosStorage = storage(restPosBuf, "vec3", particleCount);
+      const physOffStorage = storage(physOffBuf, "vec3", particleCount);
+      const physVelStorage = storage(physVelBuf, "vec3", particleCount);
+      const physRandStorage = storage(physRandBuf, "vec3", particleCount);
+
+      // Vertex stage reads the compute-written displacement as a per-instance
+      // attribute (three.js docs: `material.positionNode = buffer.toAttribute()`).
+      const physOffNode = physOffStorage.toAttribute();
+
+      const computePhysics = Fn(() => {
+        const off = physOffStorage.element(instanceIndex);
+        const vel = physVelStorage.element(instanceIndex);
+        const rest = restPosStorage.toReadOnly().element(instanceIndex);
+        const rnd = physRandStorage.toReadOnly().element(instanceIndex);
+
+        const eps = float(1e-5);
+        const pos = rest.add(off);
+
+        // Collider sphere (centred on the cursor) vs. particle.
+        const toParticle = pos.sub(u.pusherPos); // sphere centre → particle
+        const d = toParticle.length();
+        const dirOut = toParticle.div(d.add(eps)); // radial, outward
+        const penetration = max(u.pusherRadius.sub(d), float(0)); // >0 inside
+        const penN = penetration.div(u.pusherRadius.add(eps)); // 0..1
+
+        // "Break apart": shove particles radially out, with per-particle scatter.
+        const breakDir = normalize(dirOut.add(rnd.mul(float(0.5))));
+        const radialForce = breakDir.mul(penetration).mul(u.pusherRadial);
+
+        // "Move in the cursor direction": drag overlapped particles along.
+        const moveForce = u.pusherVel.mul(u.pusherMove).mul(penN);
+
+        const pushAccel = radialForce.add(moveForce).mul(u.pusherActive);
+
+        // Spring back to rest + damping → particles return to their position.
+        const accel = pushAccel
+          .sub(off.mul(u.pusherSpring))
+          .sub(vel.mul(u.pusherDamping));
+
+        vel.addAssign(accel.mul(u.physDt));
+        off.addAssign(vel.mul(u.physDt));
+
+        // Clamp displacement to the maximum.
+        const offLen = off.length();
+        const scale = min(float(1), u.pusherMaxOffset.div(offLen.add(eps)));
+        off.mulAssign(scale);
+      })().compute(particleCount);
+
       // ── TSL material ──────────────────────────────────────────────────────────
       const material = new MeshBasicNodeMaterial() as any;
 
-      const seedAttr = attribute("instanceSeed", "float");
       const instNorm = attribute("instanceNormal", "vec3");
       const instPos = attribute("instancePos", "vec3");
       const instNormTgt = attribute("instanceNormalTarget", "vec3");
@@ -553,7 +657,11 @@ export default function ParticlesHologram({
         mix(instNorm, instNormTgt, u.transitionProgress),
       );
 
-      const phase = seedAttr.mul(Math.PI * 2);
+      // Stable per-particle phase, hashed from the rest position (replaces the
+      // former `instanceSeed` vertex attribute to stay within the 8-buffer cap).
+      const phase = fract(
+        sin(dot(instPosTgt, vec3(12.9898, 78.233, 37.719))).mul(43758.5453),
+      ).mul(Math.PI * 2);
 
       // ── Animation ─────────────────────────────────────────────────────────────
       const floatDisp = vec3(
@@ -594,7 +702,7 @@ export default function ParticlesHologram({
         .mul(u.noiseAmp)
         .mul(mask);
 
-      // ── Mouse displacement ────────────────────────────────────────────────────
+      // ── Mouse proximity (drives the glow; positional push is GPU-computed) ─────
       const toMouse = u.mousePos.sub(blendPos);
       const dist = toMouse.length();
       const falloff = clamp(
@@ -602,28 +710,13 @@ export default function ParticlesHologram({
         float(0),
         float(1),
       );
-      const impulseLen = u.mouseVel.length();
-      const velDir = normalize(u.mouseVel.add(vec3(0.0001, 0.0001, 0.0001)));
-      const rawRand = vec3(
-        sin(seedAttr.mul(127.1)),
-        cos(seedAttr.mul(311.7)),
-        sin(seedAttr.mul(74.3).add(1.0)),
-      );
-      const randUnit = normalize(rawRand);
-      const onAxis = velDir.mul(dot(randUnit, velDir));
-      const perpToVel = normalize(randUnit.sub(onAxis).add(vec3(0, 0.0001, 0)));
-      const mouseDisp = velDir
-        .add(perpToVel.mul(u.mouseScatter))
-        .mul(impulseLen)
-        .mul(u.mouseStrength)
-        .mul(falloff.mul(falloff));
 
       material.positionNode = positionLocal
         .mul(u.sphereSize)
         .add(blendPos)
         .add(floatDisp)
         .add(noiseDisp)
-        .add(mouseDisp);
+        .add(physOffNode);
 
       // ── Shading ───────────────────────────────────────────────────────────────
       const lightContrib = (lightPos: any, lightCol: any, lightInt: any) => {
@@ -695,6 +788,21 @@ export default function ParticlesHologram({
       const rotGroup = new Group();
       rotGroup.add(instancedMesh);
       posGroup.add(rotGroup);
+
+      // ── Debug collider sphere (the invisible pusher made visible) ──────────────
+      const pusherGeo = new IcosahedronGeometry(1, 2);
+      const pusherMat = new MeshBasicNodeMaterial() as any;
+      pusherMat.wireframe = true;
+      pusherMat.transparent = true;
+      pusherMat.depthWrite = false;
+      pusherMat.colorNode = uniform(new Color("#00ffaa"));
+      pusherMat.opacityNode = float(0.4);
+      const pusherMesh = new Mesh(pusherGeo, pusherMat);
+      pusherMesh.renderOrder = 10;
+      pusherMesh.visible = false;
+      pusherMesh.scale.setScalar(pusherRadius);
+      rotGroup.add(pusherMesh);
+      pusherMeshRef.current = pusherMesh;
 
       // ── Transparent cylinder ──────────────────────────────────────────────────
       const cylGeo = new CylinderGeometry(
@@ -926,6 +1034,11 @@ export default function ParticlesHologram({
       const targetMousePos = new Vector3();
       const smoothMousePos = new Vector3();
       const prevMousePos = new Vector3();
+      const pusherPos = new Vector3();
+      const pusherPrev = new Vector3();
+      const pusherVelVec = new Vector3();
+      let pusherInit = false;
+      let mouseOver = false;
       const frameVel = new Vector3();
       const smoothVel = new Vector3();
       const impVel = new Vector3();
@@ -934,8 +1047,12 @@ export default function ParticlesHologram({
       let lastFrameTime = performance.now();
       let mouseMoving = false;
       const CAM_RADIUS = camera.position.z;
-      let camX = 0, camY = 0, camRoll = 0;
-      let camVelX = 0, camVelY = 0, camVelRoll = 0;
+      let camX = 0,
+        camY = 0,
+        camRoll = 0;
+      let camVelX = 0,
+        camVelY = 0,
+        camVelRoll = 0;
       let moveTimer = 0;
       const MOVE_TIMEOUT = 0.06;
       let mouseEverMoved = false;
@@ -961,11 +1078,14 @@ export default function ParticlesHologram({
           }
         }
         mouseMoving = true;
+        mouseOver = true;
         moveTimer = 0;
       };
 
       const onMouseLeave = () => {
         mouseMoving = false;
+        mouseOver = false;
+        pusherInit = false;
       };
 
       container.addEventListener("mousemove", onMouseMove);
@@ -1063,6 +1183,18 @@ export default function ParticlesHologram({
         camera.getWorldDirection(cameraDir);
         mousePlane.setFromNormalAndCoplanarPoint(cameraDir, modelCenter);
 
+        // Re-project the cursor onto the model plane every frame so the collider
+        // tracks it even while the model auto-rotates or the camera drifts.
+        if (mouseEverMoved) {
+          raycaster.setFromCamera(mouseNDC, camera);
+          if (raycaster.ray.intersectPlane(mousePlane, mouseHit)) {
+            mouseHit
+              .sub(posGroup.position)
+              .applyQuaternion(rotGroup.quaternion.clone().invert());
+            targetMousePos.copy(mouseHit);
+          }
+        }
+
         // ── Smooth mouse position ─────────────────────────────────────────────
         if (mouseEverMoved) {
           const alpha = 1 - Math.exp(-mouseLerpRef.current * delta);
@@ -1078,6 +1210,34 @@ export default function ParticlesHologram({
           smoothVel.lerp(frameVel, 0.15);
         } else {
           smoothVel.multiplyScalar(0.85);
+        }
+
+        // ── Pusher (collider sphere) physics input ────────────────────────────
+        u.physDt.value = delta;
+        if (mouseEverMoved) {
+          if (!pusherInit) {
+            pusherPos.copy(targetMousePos);
+            pusherPrev.copy(targetMousePos);
+            pusherInit = true;
+          }
+          const pa = 1 - Math.exp(-pusherFollowRef.current * delta);
+          pusherPos.lerp(targetMousePos, pa);
+          pusherVelVec
+            .subVectors(pusherPos, pusherPrev)
+            .divideScalar(Math.max(delta, 0.001))
+            .clampLength(0, 12);
+          pusherPrev.copy(pusherPos);
+          u.pusherPos.value.copy(pusherPos);
+          u.pusherVel.value.copy(pusherVelVec);
+        }
+        u.pusherActive.value = mouseEverMoved && mouseOver ? 1 : 0;
+
+        // Position / show the debug collider sphere.
+        if (pusherMeshRef.current) {
+          pusherMeshRef.current.position.copy(pusherPos);
+          pusherMeshRef.current.scale.setScalar(u.pusherRadius.value);
+          pusherMeshRef.current.visible =
+            pusherVisibleRef.current && mouseEverMoved && mouseOver;
         }
 
         // ── Spring-damper ─────────────────────────────────────────────────────
@@ -1131,6 +1291,10 @@ export default function ParticlesHologram({
 
         controls.autoRotate = false;
         controls.update();
+
+        // Step the per-particle physics before rendering reads the offsets.
+        renderer.computeAsync(computePhysics);
+
         if (postProcessing) {
           postProcessing.renderAsync();
         } else {
@@ -1145,6 +1309,9 @@ export default function ParticlesHologram({
         container.removeEventListener("mouseleave", onMouseLeave);
         sphereGeo.dispose();
         material.dispose();
+        pusherGeo.dispose();
+        pusherMat.dispose();
+        pusherMeshRef.current = null;
         cylGeo.dispose();
         cylMat.dispose();
         triTex.dispose();
@@ -1180,6 +1347,9 @@ export default function ParticlesHologram({
       controlsRef.current = null;
       groupRef.current = null;
       uniformsRef.current = null;
+      restPosBufRef.current = null;
+      physOffBufRef.current = null;
+      physVelBufRef.current = null;
       if (renderer) {
         renderer.dispose();
         renderer.domElement?.remove();
@@ -1233,6 +1403,12 @@ export default function ParticlesHologram({
         normAttrTargetRef.current.needsUpdate = true;
         transitionTimeRef.current = 0;
 
+        // Spring rest position follows the new model shape.
+        if (restPosBufRef.current) {
+          (restPosBufRef.current.array as Float32Array).set(newPos);
+          restPosBufRef.current.needsUpdate = true;
+        }
+
         if (wasIdle) {
           transitionStateRef.current = "deform-out";
         } else {
@@ -1274,10 +1450,17 @@ export default function ParticlesHologram({
       u.noiseGain.value = noiseGain;
       u.maskScale.value = maskScale;
       u.maskSpeed.value = maskSpeed;
-      if (transitionStateRef.current === "idle") u.maskContrast.value = maskContrast;
+      if (transitionStateRef.current === "idle")
+        u.maskContrast.value = maskContrast;
       u.mouseRadius.value = mouseRadius;
       u.mouseStrength.value = mouseStrength;
       u.mouseScatter.value = mouseScatter;
+      u.pusherRadius.value = pusherRadius;
+      u.pusherRadial.value = pusherRadialStrength;
+      u.pusherMove.value = pusherMoveStrength;
+      u.pusherSpring.value = pusherSpring;
+      u.pusherDamping.value = pusherDamping;
+      u.pusherMaxOffset.value = pusherMaxOffset;
       u.mouseGlowColor.value.set(mouseGlowColor);
       u.mouseGlowPassive.value = mouseGlowPassive;
       u.mouseGlowActive.value = mouseGlowActive;
@@ -1357,6 +1540,14 @@ export default function ParticlesHologram({
     (normAttrRef.current.array as Float32Array).fill(0);
     posAttrRef.current.needsUpdate = true;
     normAttrRef.current.needsUpdate = true;
+    if (physOffBufRef.current) {
+      (physOffBufRef.current.array as Float32Array).fill(0);
+      physOffBufRef.current.needsUpdate = true;
+    }
+    if (physVelBufRef.current) {
+      (physVelBufRef.current.array as Float32Array).fill(0);
+      physVelBufRef.current.needsUpdate = true;
+    }
     uniformsRef.current.transitionProgress.value = 0;
     uniformsRef.current.maskContrast.value = transitionMaskContrastRef.current;
     uniformsRef.current.entranceGlow.value = 1;
@@ -1369,23 +1560,42 @@ export default function ParticlesHologram({
   useEffect(() => {
     if (!cylMeshRef.current) return;
     const old = cylMeshRef.current.geometry;
-    cylMeshRef.current.geometry = new CylinderGeometry(cylRadius, cylRadius, cylHeight, 64, 1, true);
+    cylMeshRef.current.geometry = new CylinderGeometry(
+      cylRadius,
+      cylRadius,
+      cylHeight,
+      64,
+      1,
+      true,
+    );
     cylMeshRef.current.position.y = cylHeight / 2 + cylY;
     old.dispose();
-    if (ringTopGroupRef.current) ringTopGroupRef.current.position.y = cylHeight + cylY;
+    if (ringTopGroupRef.current)
+      ringTopGroupRef.current.position.y = cylHeight + cylY;
     if (ringBotGroupRef.current) ringBotGroupRef.current.position.y = cylY;
   }, [cylRadius, cylHeight, cylY]);
 
   // ── Ring geometry rebuild ─────────────────────────────────────────────────────
   useEffect(() => {
-    const meshes = [ring1Ref.current, ring2Ref.current, ring3Ref.current, ring4Ref.current];
+    const meshes = [
+      ring1Ref.current,
+      ring2Ref.current,
+      ring3Ref.current,
+      ring4Ref.current,
+    ];
     const uni = ringUniRef.current;
     if (meshes.some((m) => !m) || !uni) return;
     const gapRad = ringGap * (Math.PI / 180);
     const arcSpan = Math.PI - gapRad;
     meshes.forEach((mesh) => {
       const old = mesh!.geometry;
-      mesh!.geometry = new TorusGeometry(ringRadius, ringThickness, 8, 80, arcSpan);
+      mesh!.geometry = new TorusGeometry(
+        ringRadius,
+        ringThickness,
+        8,
+        80,
+        arcSpan,
+      );
       old.dispose();
     });
     const yA = gapRad / 2;

@@ -16,7 +16,8 @@
       "Bash(mkdir -p components/ModelSelector)",
       "Bash(mkdir -p components/OverlayButtons)",
       "Bash(mkdir -p components/OverlayHeader)",
-      "Bash(mkdir -p components/UIOverlay)"
+      "Bash(mkdir -p components/UIOverlay)",
+      "Bash(pkill -f \"next dev\")"
     ]
   }
 }
