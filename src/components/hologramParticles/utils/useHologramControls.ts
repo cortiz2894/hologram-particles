@@ -12,7 +12,7 @@ export function useHologramControls(onReplay: () => void) {
     Geometry: folder(
       {
         particleCount: {
-          value: 60000,
+          value: 75000,
           min: 1000,
           max: 150000,
           step: 1000,
@@ -34,7 +34,7 @@ export function useHologramControls(onReplay: () => void) {
           label: "Volume Strength",
         },
         sphereSize: {
-          value: 0.014,
+          value: 0.02,
           min: 0.003,
           max: 0.08,
           step: 0.001,
@@ -159,7 +159,7 @@ export function useHologramControls(onReplay: () => void) {
           label: "Influence Falloff",
         },
         pusherDepth: {
-          value: 1.3,
+          value: 2,
           min: 0.5,
           max: 30,
           step: 0.5,
@@ -439,6 +439,21 @@ export function useHologramControls(onReplay: () => void) {
     Cylinder: folder(
       {
         cylVisible: { value: true, label: "Visible" },
+        cylCollision: { value: true, label: "Collision" },
+        cylBounce: {
+          value: 0.5,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          label: "Bounce",
+        },
+        cylHoldTime: {
+          value: 0.05,
+          min: 0,
+          max: 3,
+          step: 0.05,
+          label: "Wall Hold (s)",
+        },
         cylColor: { value: "#ffffff", label: "Color" },
         cylRadius: {
           value: 1.95,

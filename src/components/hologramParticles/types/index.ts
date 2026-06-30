@@ -200,6 +200,12 @@ export interface ParticlesHologramProps {
   // ── Cylinder ──────────────────────────────────────────────────────────────
   /** Show or hide the cylinder */
   cylVisible?: boolean;
+  /** Contain particles inside the cylinder — they collide with its wall instead of leaving */
+  cylCollision?: boolean;
+  /** Wall restitution — 0 = particles stop at the wall, 1 = they bounce back */
+  cylBounce?: number;
+  /** Seconds particles cling to the cylinder wall after colliding before returning */
+  cylHoldTime?: number;
   /** Cylinder radius in world units */
   cylRadius?: number;
   /** Cylinder height in world units */

@@ -52,7 +52,9 @@ import {
   dot,
   clamp,
   min,
+  max,
   mix,
+  step,
   pow,
   abs,
   smoothstep as tslSmoothstep,
@@ -226,6 +228,9 @@ export default function ParticlesHologram({
   transitionMaskContrast = 0.2,
   transitionGlowScale = 1.0,
   cylVisible = true,
+  cylCollision = true,
+  cylBounce = 0,
+  cylHoldTime = 0.4,
   cylRadius = 1.8,
   cylHeight = 3.5,
   cylColor = "#88ccff",
@@ -274,6 +279,7 @@ export default function ParticlesHologram({
   const restPosBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
   const physOffBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
   const physVelBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
+  const physHoldBufRef = useRef<StorageInstancedBufferAttribute | null>(null);
   const pusherMeshRef = useRef<Mesh | null>(null);
   const pusherFollowRef = useRef(pusherFollow);
   const pusherVisibleRef = useRef(pusherVisible);
@@ -569,6 +575,11 @@ export default function ParticlesHologram({
         pusherSpring: uniform(pusherSpring),
         pusherDamping: uniform(pusherDamping),
         pusherMaxOffset: uniform(pusherMaxOffset),
+        // Cylinder containment (collision against cylMesh's wall).
+        cylCollision: uniform(cylCollision ? 1 : 0),
+        cylRadius: uniform(cylRadius),
+        cylBounce: uniform(cylBounce),
+        cylHoldTime: uniform(cylHoldTime),
         pusherTurbulence: uniform(pusherTurbulence),
         pusherTurbScale: uniform(pusherTurbScale),
         pusherTurbSpeed: uniform(pusherTurbSpeed),
@@ -594,6 +605,8 @@ export default function ParticlesHologram({
       );
       const physOffBuf = new StorageInstancedBufferAttribute(particleCount, 3);
       const physVelBuf = new StorageInstancedBufferAttribute(particleCount, 3);
+      // Per-particle "cling" timer: seconds left stuck to the cylinder wall.
+      const physHoldBuf = new StorageInstancedBufferAttribute(particleCount, 1);
       const physRandArr = new Float32Array(particleCount * 3);
       for (let i = 0; i < particleCount; i++) {
         let x = Math.random() * 2 - 1;
@@ -612,10 +625,12 @@ export default function ParticlesHologram({
       restPosBufRef.current = restPosBuf;
       physOffBufRef.current = physOffBuf;
       physVelBufRef.current = physVelBuf;
+      physHoldBufRef.current = physHoldBuf;
 
       const restPosStorage = storage(restPosBuf, "vec3", particleCount);
       const physOffStorage = storage(physOffBuf, "vec3", particleCount);
       const physVelStorage = storage(physVelBuf, "vec3", particleCount);
+      const physHoldStorage = storage(physHoldBuf, "float", particleCount);
       const physRandStorage = storage(physRandBuf, "vec3", particleCount);
 
       // Vertex stage reads the compute-written displacement as a per-instance
@@ -625,10 +640,14 @@ export default function ParticlesHologram({
       const computePhysics = Fn(() => {
         const off = physOffStorage.element(instanceIndex);
         const vel = physVelStorage.element(instanceIndex);
+        const hold = physHoldStorage.element(instanceIndex);
         const rest = restPosStorage.toReadOnly().element(instanceIndex);
         const rnd = physRandStorage.toReadOnly().element(instanceIndex);
 
         const eps = float(1e-5);
+        // Particles clinging to the wall (hold timer running) skip the spring
+        // return, so they stay stuck a moment before springing home.
+        const held = step(float(1e-4), hold);
         const pos = rest.add(off);
         const speed = u.pusherVel.length();
         const moveDir = u.pusherVel.div(speed.add(eps)); // 0 when still
@@ -687,8 +706,9 @@ export default function ParticlesHologram({
         const pushAccel = pushForce.add(turbForce).mul(u.pusherActive);
 
         // Spring back to rest + damping → particles return to their position.
+        // While a particle is held against the wall, its spring is switched off.
         const accel = pushAccel
-          .sub(off.mul(u.pusherSpring))
+          .sub(off.mul(u.pusherSpring).mul(float(1).sub(held)))
           .sub(vel.mul(u.pusherDamping));
 
         vel.addAssign(accel.mul(u.physDt));
@@ -698,6 +718,47 @@ export default function ParticlesHologram({
         const offLen = off.length();
         const scale = min(float(1), u.pusherMaxOffset.div(offLen.add(eps)));
         off.mulAssign(scale);
+
+        // ── Cylinder containment ──────────────────────────────────────────────
+        // The cylinder (cylMesh) is Y-symmetric and the model only rotates around
+        // Y, so its wall is the same in this local space: keep every particle
+        // within `cylRadius` of the Y axis. Toggled by u.cylCollision (0 = off).
+        const cpos = rest.add(off);
+        const rXZ = vec2(cpos.x, cpos.z).length();
+        // <1 only when the particle is outside the wall → pulls it back to it.
+        const clampF = mix(
+          float(1),
+          min(float(1), u.cylRadius.div(rXZ.add(eps))),
+          u.cylCollision,
+        );
+        off.assign(
+          vec3(
+            cpos.x.mul(clampF).sub(rest.x),
+            cpos.y.sub(rest.y),
+            cpos.z.mul(clampF).sub(rest.z),
+          ),
+        );
+
+        // Collision response: cancel the outward radial velocity at the wall so
+        // particles bounce/stop instead of pressing through (cylBounce = restitution).
+        const outAmt = max(rXZ.sub(u.cylRadius), float(0));
+        const isOut = outAmt.div(outAmt.add(eps)).mul(u.cylCollision); // ~1 outside
+        const nrm = vec2(cpos.x, cpos.z).div(rXZ.add(eps)); // outward normal (xz)
+        const vRad = vel.x.mul(nrm.x).add(vel.z.mul(nrm.y));
+        const vRemove = max(vRad, float(0))
+          .mul(isOut)
+          .mul(float(1).add(u.cylBounce));
+        vel.assign(
+          vec3(vel.x.sub(nrm.x.mul(vRemove)), vel.y, vel.z.sub(nrm.y.mul(vRemove))),
+        );
+
+        // ── Wall cling timer ──────────────────────────────────────────────────
+        // When a particle is actively driven past the wall (overshoot beyond a
+        // small margin), (re)arm its hold timer; otherwise count it down. A held
+        // particle stays pinned (spring off) until the timer reaches zero.
+        const atWall = step(u.cylRadius.add(float(0.01)), rXZ).mul(u.cylCollision);
+        const decremented = max(hold.sub(u.physDt), float(0));
+        hold.assign(mix(decremented, u.cylHoldTime, atWall));
       })().compute(particleCount);
 
       // ── TSL material ──────────────────────────────────────────────────────────
@@ -758,12 +819,28 @@ export default function ParticlesHologram({
         .mul(u.noiseAmp)
         .mul(mask);
 
-      material.positionNode = positionLocal
-        .mul(u.sphereSize)
-        .add(blendPos)
+      // Full instance centre, including the ambient float/noise wobble.
+      const instCenter = blendPos
         .add(floatDisp)
         .add(noiseDisp)
         .add(physOffNode);
+      // Hard-contain the rendered position within the cylinder wall too, so the
+      // wobble can never poke a particle through the container surface.
+      const rCenter = vec2(instCenter.x, instCenter.z).length();
+      const centerClampF = mix(
+        float(1),
+        min(float(1), u.cylRadius.div(rCenter.add(float(1e-5)))),
+        u.cylCollision,
+      );
+      const containedCenter = vec3(
+        instCenter.x.mul(centerClampF),
+        instCenter.y,
+        instCenter.z.mul(centerClampF),
+      );
+
+      material.positionNode = positionLocal
+        .mul(u.sphereSize)
+        .add(containedCenter);
 
       // ── Shading ───────────────────────────────────────────────────────────────
       const lightContrib = (lightPos: any, lightCol: any, lightInt: any) => {
@@ -1408,6 +1485,7 @@ export default function ParticlesHologram({
       restPosBufRef.current = null;
       physOffBufRef.current = null;
       physVelBufRef.current = null;
+      physHoldBufRef.current = null;
       if (renderer) {
         renderer.dispose();
         renderer.domElement?.remove();
@@ -1523,6 +1601,10 @@ export default function ParticlesHologram({
       u.pusherSpring.value = pusherSpring;
       u.pusherDamping.value = pusherDamping;
       u.pusherMaxOffset.value = pusherMaxOffset;
+      u.cylCollision.value = cylCollision ? 1 : 0;
+      u.cylRadius.value = cylRadius;
+      u.cylBounce.value = cylBounce;
+      u.cylHoldTime.value = cylHoldTime;
       u.pusherTurbulence.value = pusherTurbulence;
       u.pusherTurbScale.value = pusherTurbScale;
       u.pusherTurbSpeed.value = pusherTurbSpeed;
@@ -1613,6 +1695,10 @@ export default function ParticlesHologram({
     if (physVelBufRef.current) {
       (physVelBufRef.current.array as Float32Array).fill(0);
       physVelBufRef.current.needsUpdate = true;
+    }
+    if (physHoldBufRef.current) {
+      (physHoldBufRef.current.array as Float32Array).fill(0);
+      physHoldBufRef.current.needsUpdate = true;
     }
     uniformsRef.current.transitionProgress.value = 0;
     uniformsRef.current.maskContrast.value = transitionMaskContrastRef.current;
