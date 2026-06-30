@@ -14,8 +14,6 @@ It includes a fully interactive **3D Playground** to explore every parameter of 
 
 https://github.com/user-attachments/assets/b0cf8dd1-9178-4018-b74a-cfabce1b08b9
 
-
-
 > **Original design & concept — [igloo.inc](https://www.igloo.inc/)**
 > Replica developed by Cortiz
 
@@ -41,17 +39,20 @@ Key highlights:
 ## ⚡ Particle System Features
 
 ### Geometry
+
 - **InstancedMesh** — 60,000 icosahedron spheres rendered in a single draw call
 - **GLB surface sampling** — positions and normals sampled via `MeshSurfaceSampler`, distributed proportionally by triangle area
 - **Dual normal blending** — per-particle blend between figure surface normal and sphere local normal for micro-volume shading
 
 ### Shading (TSL)
+
 - **Wrapped diffuse lighting** — two-light model with softened terminator (`wrap` parameter)
 - **Volume strength** — blends figure macro-normal with sphere micro-normal for physical roundness
 - **Fractal noise displacement** — `mx_fractal_noise_vec3` drives particle animation along surface normals
 - **Animated noise mask** — controls which particles displace and by how much
 
 ### Mouse Interaction & Physics
+
 - **GPU compute physics** — per-particle velocity + offset simulated in a TSL compute shader, scaling to all 60k particles
 - **Fluid "pusher"** — a collider that follows the cursor and shoves particles in the direction of movement, like sweeping a hand through water (wave + turbulence, with an adjustable influence radius and full depth reach)
 - **Spring-damper return** — particles glide back to rest with tunable stiffness and damping
@@ -59,17 +60,20 @@ Key highlights:
 - **Camera spring** — XY translation + Z roll driven by cursor NDC position
 
 ### Model Morphing
+
 - **Three-phase state machine** — deform out → morph → reform
 - **GPU lerp** — `mix(current, target, progress)` uniform drives all 60k particles simultaneously
 - **Transition glow** — particles with greatest displacement bloom brightest during morph
 - **Noise mask dissolve** — organic non-uniform deform controlled by mask contrast
 
 ### Scene Elements
+
 - **Cylinder** — transparent Fresnel edge glow tube framing the figure, with optional **particle collision** so particles stay contained, bounce off the wall, and briefly cling before returning
 - **Halo rings** — two pairs of rotating arcs at top and bottom of cylinder
 - **Dot grid** — animated floor grid with wave brightness
 
 ### Post-processing
+
 - **Bloom** — WebGPU native bloom node, luminance-threshold with tunable strength and radius
 
 ---
@@ -78,15 +82,15 @@ Key highlights:
 
 Built-in debug visualizations for breakdown and presentation:
 
-| Button | Mode | Shows |
-|--------|------|-------|
-| `WF` | Wireframe | Edge geometry of the loaded GLB |
-| `FLAT` | Flat | Raw particle density, no lighting |
-| `NRM` | Normals | Surface normals as RGB color |
-| `NOI` | Noise | Raw fractal noise field as grayscale |
-| `LIT` | Lit | Combined grayscale diffuse + ambient |
-| `L1` | Light 1 | Light 1 contribution only |
-| `L2` | Light 2 | Light 2 contribution only |
+| Button | Mode      | Shows                                |
+| ------ | --------- | ------------------------------------ |
+| `WF`   | Wireframe | Edge geometry of the loaded GLB      |
+| `FLAT` | Flat      | Raw particle density, no lighting    |
+| `NRM`  | Normals   | Surface normals as RGB color         |
+| `NOI`  | Noise     | Raw fractal noise field as grayscale |
+| `LIT`  | Lit       | Combined grayscale diffuse + ambient |
+| `L1`   | Light 1   | Light 1 contribution only            |
+| `L2`   | Light 2   | Light 2 contribution only            |
 
 All debug modes hide scene decorations (cylinder, rings, grid, header) for clean capture.
 
@@ -97,6 +101,7 @@ All debug modes hide scene decorations (cylinder, rings, grid, header) for clean
 A built-in development environment for exploring the effect in context.
 
 ### Controls
+
 - Particle count, sphere size, auto-rotate speed
 - Two-light rig — position, color, intensity per light
 - Wrap, ambient, volume strength
