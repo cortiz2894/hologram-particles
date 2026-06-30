@@ -108,6 +108,37 @@ export interface ParticlesHologramProps {
   pushStrength?: number;
   /** Per-particle scatter — 0: all particles move as one block, high: each particle flies in its own direction */
   mouseScatter?: number;
+  // ── Pusher physics (invisible collider sphere that follows the cursor) ───────
+  /** Show the debug collider sphere (helps tuning; hide it for production) */
+  pusherVisible?: boolean;
+  /** Radius of the collider core in model-local units */
+  pusherRadius?: number;
+  /** Soft influence halo beyond the core — larger = the drag reaches more surrounding particles */
+  pusherInfluence?: number;
+  /** Influence falloff shape — <1 spreads the effect wider, >1 concentrates it near the core */
+  pusherFalloff?: number;
+  /** Depth (Z length) of the collider cylinder along the view axis */
+  pusherDepth?: number;
+  /** How fast the collider follows the cursor (higher = snappier) */
+  pusherFollow?: number;
+  /** Radial push force — how hard particles are shoved out of the sphere ("break apart") */
+  pusherRadialStrength?: number;
+  /** Directional push force — how hard particles are dragged along the cursor's motion */
+  pusherMoveStrength?: number;
+  /** Forward lean — how much the expulsion bends toward the cursor's movement direction (the "wave" effect) */
+  pusherFlowBias?: number;
+  /** Spring stiffness — how fast displaced particles return to rest */
+  pusherSpring?: number;
+  /** Spring damping — higher = smoother/overdamped return, lower = springier */
+  pusherDamping?: number;
+  /** Maximum displacement a particle can reach (clamp, in model-local units) */
+  pusherMaxOffset?: number;
+  /** Turbulence strength — animated noise that scatters particles into organic wisps */
+  pusherTurbulence?: number;
+  /** Spatial scale of the turbulence field — lower = larger, smoother swirls */
+  pusherTurbScale?: number;
+  /** Speed at which the turbulence field animates over time */
+  pusherTurbSpeed?: number;
   /** Glow color — the color particles flash toward when disturbed (hex string) */
   mouseGlowColor?: string;
   /**
@@ -116,10 +147,14 @@ export interface ParticlesHologramProps {
    */
   mouseGlowPassive?: number;
   /**
-   * Active glow — extra brightness driven by displacement magnitude (impulse).
-   * Only visible while the cursor is moving / particles are disturbed.
+   * Active glow — overall brightness multiplier of the physics glow.
    */
   mouseGlowActive?: number;
+  /**
+   * Glow sensitivity — how much per-particle physics displacement is needed to
+   * light a particle up. Higher = particles glow with smaller disturbances.
+   */
+  glowSensitivity?: number;
   /**
    * Glow falloff power — controls edge sharpness of the glow halo.
    * 1 = linear, 2 = smooth, 4+ = tight hot-spot at cursor centre.
@@ -165,6 +200,12 @@ export interface ParticlesHologramProps {
   // ── Cylinder ──────────────────────────────────────────────────────────────
   /** Show or hide the cylinder */
   cylVisible?: boolean;
+  /** Contain particles inside the cylinder — they collide with its wall instead of leaving */
+  cylCollision?: boolean;
+  /** Wall restitution — 0 = particles stop at the wall, 1 = they bounce back */
+  cylBounce?: number;
+  /** Seconds particles cling to the cylinder wall after colliding before returning */
+  cylHoldTime?: number;
   /** Cylinder radius in world units */
   cylRadius?: number;
   /** Cylinder height in world units */
