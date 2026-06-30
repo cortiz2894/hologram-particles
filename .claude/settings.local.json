@@ -17,7 +17,8 @@
       "Bash(mkdir -p components/OverlayButtons)",
       "Bash(mkdir -p components/OverlayHeader)",
       "Bash(mkdir -p components/UIOverlay)",
-      "Bash(pkill -f \"next dev\")"
+      "Bash(pkill -f \"next dev\")",
+      "Bash(npx eslint *)"
     ]
   }
 }

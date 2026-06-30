@@ -15,6 +15,7 @@ import {
   Matrix3,
   Vector2,
   Vector3,
+  Quaternion,
   Box3,
   Plane,
   Raycaster,
@@ -51,7 +52,6 @@ import {
   dot,
   clamp,
   min,
-  max,
   mix,
   pow,
   abs,
@@ -195,16 +195,24 @@ export default function ParticlesHologram({
   mouseScatter = 0.6,
   pusherVisible = true,
   pusherRadius = 0.6,
+  pusherInfluence = 0.8,
+  pusherFalloff = 1.5,
+  pusherDepth = 12,
   pusherFollow = 16,
   pusherRadialStrength = 45,
   pusherMoveStrength = 14,
+  pusherFlowBias = 1.5,
   pusherSpring = 18,
   pusherDamping = 5,
   pusherMaxOffset = 2,
+  pusherTurbulence = 25,
+  pusherTurbScale = 0.6,
+  pusherTurbSpeed = 0.5,
   mouseGlowColor = "#ffffff",
   mouseGlowPassive = 0.0,
   mouseGlowActive = 1.5,
   mouseGlowPow = 2.0,
+  glowSensitivity = 1.5,
   mouseGlowDecay = 1.5,
   mouseLerp = 6.0,
   bloomStrength = 0.4,
@@ -549,18 +557,27 @@ export default function ParticlesHologram({
         physDt: uniform(0),
         pusherPos: uniform(new Vector3()),
         pusherVel: uniform(new Vector3()),
+        pusherAxis: uniform(new Vector3(0, 0, 1)),
         pusherActive: uniform(0),
         pusherRadius: uniform(pusherRadius),
+        pusherInfluence: uniform(pusherInfluence),
+        pusherFalloff: uniform(pusherFalloff),
+        pusherDepth: uniform(pusherDepth),
         pusherRadial: uniform(pusherRadialStrength),
         pusherMove: uniform(pusherMoveStrength),
+        pusherFlowBias: uniform(pusherFlowBias),
         pusherSpring: uniform(pusherSpring),
         pusherDamping: uniform(pusherDamping),
         pusherMaxOffset: uniform(pusherMaxOffset),
+        pusherTurbulence: uniform(pusherTurbulence),
+        pusherTurbScale: uniform(pusherTurbScale),
+        pusherTurbSpeed: uniform(pusherTurbSpeed),
         mouseGlowColor: uniform(new Color(mouseGlowColor)),
         mouseGlowPassive: uniform(mouseGlowPassive),
         mouseGlowActive: uniform(mouseGlowActive),
         mouseGlowPow: uniform(mouseGlowPow),
         mouseGlowEnergy: uniform(0),
+        glowSensitivity: uniform(glowSensitivity),
         transitionProgress: uniform(0),
         transitionGlowScale: uniform(transitionGlowScale),
         entranceGlow: uniform(1),
@@ -613,22 +630,61 @@ export default function ParticlesHologram({
 
         const eps = float(1e-5);
         const pos = rest.add(off);
+        const speed = u.pusherVel.length();
+        const moveDir = u.pusherVel.div(speed.add(eps)); // 0 when still
 
-        // Collider sphere (centred on the cursor) vs. particle.
-        const toParticle = pos.sub(u.pusherPos); // sphere centre → particle
-        const d = toParticle.length();
-        const dirOut = toParticle.div(d.add(eps)); // radial, outward
-        const penetration = max(u.pusherRadius.sub(d), float(0)); // >0 inside
-        const penN = penetration.div(u.pusherRadius.add(eps)); // 0..1
+        // Collider CYLINDER along the view axis: distance is measured perpendicular
+        // to that axis, so the pusher reaches through the model's full depth and
+        // disturbs every particle under the cursor (front, middle and back alike).
+        const toParticle = pos.sub(u.pusherPos);
+        const axial = dot(toParticle, u.pusherAxis); // depth along view axis
+        const perp = toParticle.sub(u.pusherAxis.mul(axial)); // in-screen offset
+        const dPerp = perp.length();
+        const dirOut = perp.div(dPerp.add(eps)); // outward in the screen plane
 
-        // "Break apart": shove particles radially out, with per-particle scatter.
-        const breakDir = normalize(dirOut.add(rnd.mul(float(0.5))));
-        const radialForce = breakDir.mul(penetration).mul(u.pusherRadial);
+        // Area of effect (perpendicular to the view axis): a solid core
+        // (pusherRadius) surrounded by a soft halo (pusherInfluence) so the drag
+        // reaches the neighbouring particles too — 1 in the core, →0 at the edge.
+        const reach = u.pusherRadius.add(u.pusherInfluence);
+        const perpFall = float(1).sub(tslSmoothstep(u.pusherRadius, reach, dPerp));
+        // Axial extent along the view axis (the cylinder's Z length): full effect
+        // within ±depth/2, fading to 0 at the caps. Controls how deep it reaches.
+        const halfDepth = u.pusherDepth.mul(float(0.5));
+        const axialInfl = float(1).sub(
+          tslSmoothstep(halfDepth.mul(float(0.7)), halfDepth, abs(axial)),
+        );
+        const influence = pow(perpFall, u.pusherFalloff).mul(axialInfl);
 
-        // "Move in the cursor direction": drag overlapped particles along.
-        const moveForce = u.pusherVel.mul(u.pusherMove).mul(penN);
+        // The collider DISPLACES particles out of its volume (it never attracts).
+        // The exit direction is radially outward, leaning toward the cursor's
+        // movement direction so the displaced particles form a wave that's pushed
+        // forward — exactly like sweeping a hand through water.
+        const exitDir = normalize(
+          dirOut.add(moveDir.mul(u.pusherFlowBias)).add(rnd.mul(float(0.3))),
+        );
+        // Magnitude: steady expulsion (carves a cavity, even when still) plus a
+        // speed-scaled forward shove (the bow wave grows with how fast you move),
+        // both faded by the influence halo so neighbours get dragged too.
+        const mag = influence
+          .mul(u.pusherRadial)
+          .add(influence.mul(speed).mul(u.pusherMove));
+        const pushForce = exitDir.mul(mag);
 
-        const pushAccel = radialForce.add(moveForce).mul(u.pusherActive);
+        // Organic turbulence: animated fractal-noise field that frays the wave into
+        // wisps — only acts on disturbed particles and grows with cursor speed.
+        const nCoord = pos.mul(u.pusherTurbScale).add(
+          vec3(
+            time.mul(u.pusherTurbSpeed),
+            time.mul(u.pusherTurbSpeed).mul(0.7),
+            time.mul(u.pusherTurbSpeed).mul(1.3),
+          ),
+        );
+        const turbAmp = u.pusherTurbulence
+          .mul(influence)
+          .mul(clamp(speed.mul(0.3).add(float(0.1)), float(0), float(1)));
+        const turbForce = mx_fractal_noise_vec3(nCoord, 2, 2.0, 0.5).mul(turbAmp);
+
+        const pushAccel = pushForce.add(turbForce).mul(u.pusherActive);
 
         // Spring back to rest + damping → particles return to their position.
         const accel = pushAccel
@@ -702,15 +758,6 @@ export default function ParticlesHologram({
         .mul(u.noiseAmp)
         .mul(mask);
 
-      // ── Mouse proximity (drives the glow; positional push is GPU-computed) ─────
-      const toMouse = u.mousePos.sub(blendPos);
-      const dist = toMouse.length();
-      const falloff = clamp(
-        float(1.0).sub(dist.div(u.mouseRadius)),
-        float(0),
-        float(1),
-      );
-
       material.positionNode = positionLocal
         .mul(u.sphereSize)
         .add(blendPos)
@@ -747,20 +794,15 @@ export default function ParticlesHologram({
         clamp(litColor.add(u.ambient), float(0), float(1)),
       );
 
-      // ── Mouse glow ────────────────────────────────────────────────────────────
-      const glowFalloff = pow(
-        clamp(falloff, float(0), float(1)),
+      // ── Physics glow ────────────────────────────────────────────────────────
+      // Particles glow according to how far the physics has displaced them from
+      // rest — i.e. exactly the ones currently being pushed/dragged light up, and
+      // they fade back to normal as they settle home.
+      const physDispMag = physOffNode.length();
+      const mouseGlowFactor = pow(
+        clamp(physDispMag.mul(u.glowSensitivity), float(0), float(1)),
         u.mouseGlowPow,
-      );
-      const passiveGlow = glowFalloff.mul(u.mouseGlowPassive);
-      const activeGlow = glowFalloff
-        .mul(u.mouseGlowEnergy)
-        .mul(u.mouseGlowActive);
-      const mouseGlowFactor = clamp(
-        passiveGlow.add(activeGlow),
-        float(0),
-        float(1),
-      );
+      ).mul(u.mouseGlowActive);
 
       // ── Transition glow ───────────────────────────────────────────────────────
       const morphActivity = u.transitionProgress
@@ -790,7 +832,10 @@ export default function ParticlesHologram({
       posGroup.add(rotGroup);
 
       // ── Debug collider sphere (the invisible pusher made visible) ──────────────
-      const pusherGeo = new IcosahedronGeometry(1, 2);
+      // A cylinder (not a sphere): it spans the full depth along the view axis,
+      // so the pusher influences particles at every Z under the cursor.
+      const PUSHER_DEPTH = 12;
+      const pusherGeo = new CylinderGeometry(1, 1, 1, 24, 1, true);
       const pusherMat = new MeshBasicNodeMaterial() as any;
       pusherMat.wireframe = true;
       pusherMat.transparent = true;
@@ -800,7 +845,7 @@ export default function ParticlesHologram({
       const pusherMesh = new Mesh(pusherGeo, pusherMat);
       pusherMesh.renderOrder = 10;
       pusherMesh.visible = false;
-      pusherMesh.scale.setScalar(pusherRadius);
+      pusherMesh.scale.set(pusherRadius, PUSHER_DEPTH, pusherRadius);
       rotGroup.add(pusherMesh);
       pusherMeshRef.current = pusherMesh;
 
@@ -1037,6 +1082,9 @@ export default function ParticlesHologram({
       const pusherPos = new Vector3();
       const pusherPrev = new Vector3();
       const pusherVelVec = new Vector3();
+      const invRotQ = new Quaternion();
+      const localAxisVec = new Vector3();
+      const PUSHER_UP = new Vector3(0, 1, 0);
       let pusherInit = false;
       let mouseOver = false;
       const frameVel = new Vector3();
@@ -1183,14 +1231,19 @@ export default function ParticlesHologram({
         camera.getWorldDirection(cameraDir);
         mousePlane.setFromNormalAndCoplanarPoint(cameraDir, modelCenter);
 
+        // Inverse of the model rotation — world → rotGroup-local space.
+        invRotQ.copy(rotGroup.quaternion).invert();
+        // View axis in local space: the collider is a cylinder along this axis,
+        // so it reaches through the model's full depth under the cursor.
+        localAxisVec.copy(cameraDir).applyQuaternion(invRotQ).normalize();
+        u.pusherAxis.value.copy(localAxisVec);
+
         // Re-project the cursor onto the model plane every frame so the collider
         // tracks it even while the model auto-rotates or the camera drifts.
         if (mouseEverMoved) {
           raycaster.setFromCamera(mouseNDC, camera);
           if (raycaster.ray.intersectPlane(mousePlane, mouseHit)) {
-            mouseHit
-              .sub(posGroup.position)
-              .applyQuaternion(rotGroup.quaternion.clone().invert());
+            mouseHit.sub(posGroup.position).applyQuaternion(invRotQ);
             targetMousePos.copy(mouseHit);
           }
         }
@@ -1212,7 +1265,7 @@ export default function ParticlesHologram({
           smoothVel.multiplyScalar(0.85);
         }
 
-        // ── Pusher (collider sphere) physics input ────────────────────────────
+        // ── Pusher (collider cylinder) physics input ──────────────────────────
         u.physDt.value = delta;
         if (mouseEverMoved) {
           if (!pusherInit) {
@@ -1225,17 +1278,22 @@ export default function ParticlesHologram({
           pusherVelVec
             .subVectors(pusherPos, pusherPrev)
             .divideScalar(Math.max(delta, 0.001))
-            .clampLength(0, 12);
+            .clampLength(0, 40);
           pusherPrev.copy(pusherPos);
           u.pusherPos.value.copy(pusherPos);
           u.pusherVel.value.copy(pusherVelVec);
         }
         u.pusherActive.value = mouseEverMoved && mouseOver ? 1 : 0;
 
-        // Position / show the debug collider sphere.
+        // Position / orient / show the debug collider cylinder (along view axis).
         if (pusherMeshRef.current) {
+          const r = u.pusherRadius.value + u.pusherInfluence.value;
           pusherMeshRef.current.position.copy(pusherPos);
-          pusherMeshRef.current.scale.setScalar(u.pusherRadius.value);
+          pusherMeshRef.current.scale.set(r, u.pusherDepth.value, r);
+          pusherMeshRef.current.quaternion.setFromUnitVectors(
+            PUSHER_UP,
+            localAxisVec,
+          );
           pusherMeshRef.current.visible =
             pusherVisibleRef.current && mouseEverMoved && mouseOver;
         }
@@ -1456,15 +1514,23 @@ export default function ParticlesHologram({
       u.mouseStrength.value = mouseStrength;
       u.mouseScatter.value = mouseScatter;
       u.pusherRadius.value = pusherRadius;
+      u.pusherInfluence.value = pusherInfluence;
+      u.pusherFalloff.value = pusherFalloff;
+      u.pusherDepth.value = pusherDepth;
       u.pusherRadial.value = pusherRadialStrength;
       u.pusherMove.value = pusherMoveStrength;
+      u.pusherFlowBias.value = pusherFlowBias;
       u.pusherSpring.value = pusherSpring;
       u.pusherDamping.value = pusherDamping;
       u.pusherMaxOffset.value = pusherMaxOffset;
+      u.pusherTurbulence.value = pusherTurbulence;
+      u.pusherTurbScale.value = pusherTurbScale;
+      u.pusherTurbSpeed.value = pusherTurbSpeed;
       u.mouseGlowColor.value.set(mouseGlowColor);
       u.mouseGlowPassive.value = mouseGlowPassive;
       u.mouseGlowActive.value = mouseGlowActive;
       u.mouseGlowPow.value = mouseGlowPow;
+      u.glowSensitivity.value = glowSensitivity;
       u.transitionGlowScale.value = transitionGlowScale;
       u.light1Pos.value.set(light1X, light1Y, light1Z);
       u.light1Color.value.set(light1Color);
