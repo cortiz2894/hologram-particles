@@ -29,6 +29,7 @@ It is designed as a learning resource and a starting point for similar VFX in in
 Key highlights:
 
 - **TSL Node Shaders** — all GPU logic written in JavaScript, no GLSL files
+- **GPU compute physics** — fluid, cursor-driven particle interaction simulated on the GPU
 - **WebGPU native** — runs on Three.js r182 WebGPU renderer
 - **Any GLB** — load your own model via drag & drop, particles adapt automatically
 - **Live model morphing** — smooth three-phase transition between GLB models
@@ -50,10 +51,11 @@ Key highlights:
 - **Fractal noise displacement** — `mx_fractal_noise_vec3` drives particle animation along surface normals
 - **Animated noise mask** — controls which particles displace and by how much
 
-### Mouse Interaction
-- **Particle displacement** — particles pushed outward from cursor within a configurable radius
-- **Spring-damper physics** — per-particle return simulation with tunable stiffness and damping
-- **Dual glow system** — passive proximity glow + active velocity-driven glow with independent decay
+### Mouse Interaction & Physics
+- **GPU compute physics** — per-particle velocity + offset simulated in a TSL compute shader, scaling to all 60k particles
+- **Fluid "pusher"** — a collider that follows the cursor and shoves particles in the direction of movement, like sweeping a hand through water (wave + turbulence, with an adjustable influence radius and full depth reach)
+- **Spring-damper return** — particles glide back to rest with tunable stiffness and damping
+- **Physics-driven glow** — particles light up based on how far they've been displaced, fading as they settle
 - **Camera spring** — XY translation + Z roll driven by cursor NDC position
 
 ### Model Morphing
@@ -63,7 +65,7 @@ Key highlights:
 - **Noise mask dissolve** — organic non-uniform deform controlled by mask contrast
 
 ### Scene Elements
-- **Cylinder** — transparent Fresnel edge glow tube framing the figure
+- **Cylinder** — transparent Fresnel edge glow tube framing the figure, with optional **particle collision** so particles stay contained, bounce off the wall, and briefly cling before returning
 - **Halo rings** — two pairs of rotating arcs at top and bottom of cylinder
 - **Dot grid** — animated floor grid with wave brightness
 
@@ -99,10 +101,12 @@ A built-in development environment for exploring the effect in context.
 - Two-light rig — position, color, intensity per light
 - Wrap, ambient, volume strength
 - Noise amplitude, scale, speed, gain
-- Mouse radius, strength, scatter, glow (passive + active)
-- Spring stiffness, damping, push strength
+- Pusher physics — collider size, influence radius, depth, wave & push force, return spring/damping
+- Turbulence amount, scale, and speed
+- Physics-driven glow sensitivity, intensity, and color
 - Camera spring stiffness and damping
 - Morph duration, reform duration, entrance animation with replay
+- Cylinder collision — bounce and wall-cling hold time
 - Cylinder, rings, and grid toggles with individual parameters
 - Bloom strength and radius
 
