@@ -12,7 +12,11 @@ It includes a fully interactive **3D Playground** to explore every parameter of 
 
 ---
 
-https://github.com/user-attachments/assets/b0cf8dd1-9178-4018-b74a-cfabce1b08b9
+
+
+https://github.com/user-attachments/assets/42736507-6455-4cde-a658-2c02d838b6ba
+
+
 
 > **Original design & concept — [igloo.inc](https://www.igloo.inc/)**
 > Replica developed by Cortiz
