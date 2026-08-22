@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Scene,
   PerspectiveCamera,
@@ -271,6 +271,13 @@ export default function ParticlesHologram({
   entranceReformDur = 0.35,
   replayTrigger = 0,
 }: ParticlesHologramProps) {
+  // ── WebGPU support check ──────────────────────────────────────────────────────
+  // Evaluated once on mount via useState initialiser — safe to read before hooks
+  // but the early return is deferred to after all hooks (Rules of Hooks).
+  const [gpuSupported] = useState<boolean>(
+    () => typeof navigator !== "undefined" && "gpu" in navigator,
+  );
+
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const groupRef = useRef<Group | null>(null);
@@ -1757,6 +1764,65 @@ export default function ParticlesHologram({
     uni.w3.rotation.y = yA;
     uni.w4.rotation.y = yB;
   }, [ringRadius, ringThickness, ringGap]);
+
+  // All hooks have been called — safe to branch on gpuSupported now.
+  if (!gpuSupported) {
+    return (
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#0a0d10",
+          color: "rgba(220, 240, 255, 0.85)",
+          fontFamily: "monospace",
+          gap: 16,
+          padding: 32,
+          textAlign: "center",
+        }}
+      >
+        <svg
+          width="40"
+          height="40"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="rgba(220,240,255,0.6)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <div style={{ fontSize: 11, letterSpacing: "0.2em", opacity: 0.5 }}>
+          WEBGPU NOT SUPPORTED
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.7, maxWidth: 380, opacity: 0.75 }}>
+          This experience requires WebGPU. Try{" "}
+          <strong>Chrome 113+</strong> or <strong>Edge 113+</strong> on a
+          device with a supported GPU.
+        </div>
+        <a
+          href="https://webgpureport.org"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            fontSize: 11,
+            letterSpacing: "0.15em",
+            color: "rgba(136,196,255,0.8)",
+            textDecoration: "none",
+            borderBottom: "1px solid rgba(136,196,255,0.3)",
+            paddingBottom: 2,
+          }}
+        >
+          CHECK YOUR BROWSER → webgpureport.org
+        </a>
+      </div>
+    );
+  }
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
